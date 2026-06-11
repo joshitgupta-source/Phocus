@@ -1,11 +1,22 @@
 <resources>
-    <string name="app_name">FocusCam</string>
-    <string name="accessibility_description">FocusCam app blocking companion service.</string>
+    <string name="app_name">Phocus</string>
+    <string name="accessibility_description">Phocus uses Accessibility Services to detect when you open a distracting app, allowing it to enforce focus timers and break the doomscrolling cycle. No personal data is collected or transmitted.</string>
 
-    <string-array name="time_limits">
-        <item>5 min</item>
-        <item>10 min</item>
-        <item>20 min</item>
-        <item>30 min</item>
-    </string-array>
+    <string name="theme_btn">💡 Theme</string>
+    <string name="search_hint">Search apps...</string>
+
+    <string name="shield_icon">🛡️</string>
+    <string name="permission_title">Permission Required</string>
+    <string name="permission_desc">Phocus needs Accessibility access to detect when you open distracting apps. We do not collect or share any data.</string>
+    <string name="enable_settings">Enable in Settings</string>
+
+    <string name="hold_still">Hold perfectly still</string>
+    <string name="timer_default">60s</string>
+
+    <string name="toast_guard_active">60s Guard Active!</string>
+    <string name="toast_guard_disabled">Guard Disabled</string>
+    <string name="toast_enable_accessibility">Find \'Phocus\' and turn it ON</string>
+    <string name="toast_unrestricted_battery">Please find Phocus and set to Unrestricted</string>
+    <string name="toast_unlocked_minutes">Unlocked for %1$d minutes!</string>
+    <string name="toast_phocus_unlocked">Phocus Unlocked</string>
 </resources>

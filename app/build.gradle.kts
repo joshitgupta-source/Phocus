@@ -3,28 +3,33 @@ plugins {
 }
 
 android {
-    namespace = "com.example.myapplication"
+    namespace = "com.joshit.phocus"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
         }
+
     }
 
     defaultConfig {
-        applicationId = "com.example.myapplication"
+        applicationId = "com.joshit.phocus"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 6
+        versionName = "1.6.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            optimization {
-                enable = false
-            }
+            isMinifyEnabled = true      // Turns on code scrambling & shrinking (R8)
+            isShrinkResources = true    // Deletes unused images/XML files to save space
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -35,6 +40,8 @@ android {
 }
 
 dependencies {
+    implementation("androidx.activity:activity-ktx:1.8.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)

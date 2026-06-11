@@ -1,4 +1,4 @@
-package com.example.myapplication
+package com.joshit.phocus
 
 import android.content.ComponentName
 import android.content.Context
@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
@@ -25,19 +24,23 @@ import android.widget.ImageView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+
+    // MVVM: The View connects to the ViewModel
+    private val viewModel: AppViewModel by viewModels()
 
     private lateinit var prefs: SharedPreferences
     private val blockedApps = mutableSetOf<String>()
     private var isCurrentlyUnlocked = false
-
-    private var allAppsList = listOf<AppInfo>()
     private lateinit var appAdapter: AppAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,7 +48,36 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         supportActionBar?.hide()
 
-        // --- THEME SETUP ---
+        setupTheme()
+
+        prefs = getSharedPreferences("FocusCamPrefs", Context.MODE_PRIVATE)
+        blockedApps.addAll(prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet())
+
+        // --- UI SETUP ---
+        val recyclerView = findViewById<RecyclerView>(R.id.appRecyclerView)
+        recyclerView.layoutManager = LinearLayoutManager(this)
+        appAdapter = AppAdapter(emptyList())
+        recyclerView.adapter = appAdapter
+
+        // MVVM: Observe the ViewModel for data changes
+        lifecycleScope.launch {
+            viewModel.appsToDisplay.collect { apps ->
+                appAdapter.updateApps(apps)
+            }
+        }
+
+        // --- SEARCH BAR LOGIC ---
+        val searchInput = findViewById<EditText>(R.id.searchInput)
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                viewModel.searchApps(s.toString()) // Delegate search logic to ViewModel
+            }
+        })
+    }
+
+    private fun setupTheme() {
         val themePrefs = getSharedPreferences("ThemeSettings", Context.MODE_PRIVATE)
         val isLightMode = themePrefs.getBoolean("isLightMode", false)
 
@@ -63,67 +95,6 @@ class MainActivity : AppCompatActivity() {
                 if (newMode) AppCompatDelegate.MODE_NIGHT_NO else AppCompatDelegate.MODE_NIGHT_YES
             )
         }
-
-        // --- LOAD PREFERENCES ---
-        prefs = getSharedPreferences("FocusCamPrefs", Context.MODE_PRIVATE)
-        blockedApps.addAll(prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet())
-
-        // --- UI SETUP ---
-        val recyclerView = findViewById<RecyclerView>(R.id.appRecyclerView)
-        recyclerView.layoutManager = LinearLayoutManager(this)
-
-        // Initialize the adapter with an empty list to prevent crashes before data loads
-        appAdapter = AppAdapter(emptyList())
-        recyclerView.adapter = appAdapter
-
-        // OPTIMIZATION 1: Lightning Fast App Loading
-        Thread {
-            val pm = packageManager
-            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-            }
-
-            // Ask OS ONLY for apps that have an icon in the app drawer (10x faster)
-            val resolveInfos = pm.queryIntentActivities(mainIntent, 0)
-
-            val launchableApps = resolveInfos.map { resolveInfo ->
-                AppInfo(
-                    name = resolveInfo.loadLabel(pm).toString(),
-                    packageName = resolveInfo.activityInfo.packageName,
-                    icon = resolveInfo.loadIcon(pm)
-                )
-            }.distinctBy { it.packageName } // Prevent duplicate icons
-                .sortedBy { it.name.lowercase() }
-
-            // OPTIMIZATION 3: Memory Leak check
-            if (!isDestroyed) {
-                runOnUiThread {
-                    allAppsList = launchableApps
-                    appAdapter.updateApps(allAppsList)
-                }
-            }
-        }.start()
-
-        // --- SEARCH BAR LOGIC ---
-        val searchInput = findViewById<EditText>(R.id.searchInput)
-        searchInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-
-            override fun afterTextChanged(s: Editable?) {
-                val query = s.toString().lowercase()
-                val filteredApps = if (query.isEmpty()) {
-                    allAppsList
-                } else {
-                    allAppsList.filter { it.name.lowercase().contains(query) }
-                        .sortedWith(
-                            compareByDescending<AppInfo> { it.name.lowercase().startsWith(query) }
-                                .thenBy { it.name.lowercase() }
-                        )
-                }
-                appAdapter.updateApps(filteredApps)
-            }
-        })
     }
 
     override fun onPause() {
@@ -135,7 +106,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-
         val lastActive = prefs.getLong("focuscam_last_active", 0L)
         val timeAway = System.currentTimeMillis() - lastActive
 
@@ -149,20 +119,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         isCurrentlyUnlocked = true
+        checkAccessibilityPermission()
+    }
 
+    private fun checkAccessibilityPermission() {
         val mainContent = findViewById<View>(R.id.mainContent)
         val permissionOverlay = findViewById<View>(R.id.permissionOverlay)
 
-        if (isAccessibilityEnabled()) {
+        val expectedComponentName = ComponentName(this, AppBlockerService::class.java).flattenToString()
+        val enabledServices = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+
+        if (enabledServices.contains(expectedComponentName)) {
             permissionOverlay.visibility = View.GONE
             mainContent.visibility = View.VISIBLE
         } else {
             permissionOverlay.visibility = View.VISIBLE
             mainContent.visibility = View.GONE
-
             findViewById<View>(R.id.grantPermissionBtn).setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                Toast.makeText(this, "Find 'Phocus' and turn it ON", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, getString(R.string.toast_enable_accessibility), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -183,12 +158,6 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchTouchEvent(event)
     }
 
-    private fun isAccessibilityEnabled(): Boolean {
-        val expectedComponentName = ComponentName(this, AppBlockerService::class.java).flattenToString()
-        val enabledServices = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-        return enabledServices.contains(expectedComponentName)
-    }
-
     private fun requestBatteryUnrestricted() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -200,13 +169,11 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
             startActivity(fallbackIntent)
-            Toast.makeText(this, "Please find Phocus and set to Unrestricted", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_unrestricted_battery), Toast.LENGTH_LONG).show()
         }
     }
 
     // --- RECYCLERVIEW ADAPTER ---
-    data class AppInfo(val name: String, val packageName: String, val icon: Drawable)
-
     inner class AppAdapter(private var apps: List<AppInfo>) : RecyclerView.Adapter<AppAdapter.ViewHolder>() {
 
         fun updateApps(newApps: List<AppInfo>) {
@@ -223,7 +190,6 @@ class MainActivity : AppCompatActivity() {
             val checkBox: CheckBox = view.findViewById(R.id.appCheckBox)
             val timeSpinner: Spinner = view.findViewById(R.id.timeSpinner)
 
-            // OPTIMIZATION 2: Create the Spinner Adapter ONCE in the init block
             val spinnerAdapter = object : ArrayAdapter<String>(
                 view.context,
                 android.R.layout.simple_spinner_item,
@@ -266,13 +232,13 @@ class MainActivity : AppCompatActivity() {
                 if (isChecked) {
                     blockedApps.add(app.packageName)
                     if (blockedApps.size == 1) {
-                        Toast.makeText(this@MainActivity, "60s Guard Active!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
                         requestBatteryUnrestricted()
                     }
                 } else {
                     blockedApps.remove(app.packageName)
                     if (blockedApps.isEmpty()) {
-                        Toast.makeText(this@MainActivity, "Guard Disabled", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -285,7 +251,6 @@ class MainActivity : AppCompatActivity() {
             val savedTime = prefs.getInt("time_${app.packageName}", 5)
             val spinnerIndex = timeValues.indexOf(savedTime).takeIf { it >= 0 } ?: 0
 
-            // BUG FIX: Detach listener before setting selection to prevent database write spam on scroll
             holder.timeSpinner.onItemSelectedListener = null
             holder.timeSpinner.setSelection(spinnerIndex, false)
 

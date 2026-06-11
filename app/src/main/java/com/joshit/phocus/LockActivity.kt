@@ -1,4 +1,4 @@
-package com.example.myapplication
+package com.joshit.phocus
 
 import android.content.Context
 import android.content.Intent

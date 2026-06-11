@@ -2,29 +2,29 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// 1. We create a variable at the top so we can use it in both the app AND the file name
+val appVersionName = "1.6.5"
+
 android {
     namespace = "com.joshit.phocus"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.joshit.phocus"
         minSdk = 24
         targetSdk = 36
         versionCode = 6
-        versionName = "1.6.5"
+
+        // 2. We use the variable here for the phone's "App Info" settings
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true      // Turns on code scrambling & shrinking (R8)
-            isShrinkResources = true    // Deletes unused images/XML files to save space
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -48,4 +48,10 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+}
+
+// --- MODERN AGP 9+ APK RENAMING ---
+// 3. This safely overrides the base filename without touching locked Android APIs
+base {
+    archivesName.set("Phocus_v${appVersionName}")
 }

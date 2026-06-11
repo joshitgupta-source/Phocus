@@ -50,7 +50,7 @@ It immediately overlays its own blocking screen over the target application, pre
 ## 🚀 Installation & Usage
 
 1. Navigate to the [Releases](../../releases) section of this repository.
-2. Download the latest `Phocus_vX.X.X-release.apk` file to your Android device.
+2. Download the latest `Phocus_v1.6.5-release.apk` file to your Android device.
 3. Open the file to install (you may need to allow "Install from Unknown Sources" in your browser settings).
 4. Launch the app and grant the requested **Accessibility Permissions** in your Android Settings so the blocker can function.
 5. Select the apps you want to lock down and start your focus session.

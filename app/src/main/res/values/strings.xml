@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">FocusCam</string>
+    <string name="accessibility_description">FocusCam app blocking companion service.</string>
+
+    <string-array name="time_limits">
+        <item>5 min</item>
+        <item>10 min</item>
+        <item>20 min</item>
+        <item>30 min</item>
+    </string-array>
+</resources>

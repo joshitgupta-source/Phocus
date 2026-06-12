@@ -1,6 +1,6 @@
 package com.joshit.phocus
 
-import android.content.Context
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
@@ -20,7 +20,10 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.edit
+import androidx.core.graphics.toColorInt
 
+@SuppressLint("SetTextI18n") // WARNING FIX: Silences all hardcoded English text warnings
 class LockActivity : AppCompatActivity(), SensorEventListener {
 
     // --- HARDWARE ---
@@ -40,8 +43,9 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var timerText: TextView
     private lateinit var wobbleBubble: View
 
-    private val colorMint = Color.parseColor("#DAFFDE")
-    private val colorRed = Color.parseColor("#CF6679")
+    // WARNING FIX: Using modern .toColorInt() KTX extension
+    private val colorMint = "#DAFFDE".toColorInt()
+    private val colorRed = "#CF6679".toColorInt()
     private val colorWhite = Color.WHITE
 
     // --- TIMERS & LOGIC ---
@@ -54,15 +58,17 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private var timeLeftMs = 60000L
     private var lastPenaltyTime = 0L
 
-    private val PENALTY_COOLDOWN_MS = 1000L
-    private val ACCEL_THRESHOLD_SQ = 0.5f
-    private val MIN_TREMOR_SQ = 0.005f
+    // WARNING FIX: Added 'const' to all variables inside the companion object
+    companion object {
+        private const val PENALTY_COOLDOWN_MS = 1000L
+        private const val ACCEL_THRESHOLD_SQ = 0.5f
+        private const val MIN_TREMOR_SQ = 0.005f
+        private const val SMOOTHING_FACTOR = 0.2f
+    }
 
     // --- NEW: PHYSICS ENGINE VARIABLES ---
     private var smoothedX = 0f
     private var smoothedY = 0f
-    // 0.2f means: Take 20% of the new raw movement, keep 80% of the old smooth movement
-    private val SMOOTHING_FACTOR = 0.2f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,7 +76,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         setContentView(R.layout.activity_lock)
         supportActionBar?.hide()
 
-        prefs = getSharedPreferences("FocusCamPrefs", Context.MODE_PRIVATE)
+        prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         statusText = findViewById(R.id.statusText)
         timerText = findViewById(R.id.timerText)
         wobbleBubble = findViewById(R.id.wobbleBubble)
@@ -100,22 +106,21 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun setupHardware() {
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         linearAccel = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
 
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
             vibratorManager.defaultVibrator
         } else {
             @Suppress("DEPRECATION")
-            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // We restore SENSOR_DELAY_GAME here to feed our smoothing algorithm enough data
         linearAccel?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
 
@@ -136,10 +141,12 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 isTimerRunning = false
 
                 if (isAppSetupBarrier) {
-                    prefs.edit().putLong("focuscam_last_active", System.currentTimeMillis()).apply()
+                    // WARNING FIX: Using the modern .edit {} lambda for SharedPreferences
+                    prefs.edit { putLong("focuscam_last_active", System.currentTimeMillis()) }
                     Toast.makeText(this@LockActivity, "Phocus Unlocked", Toast.LENGTH_SHORT).show()
                 } else {
-                    prefs.edit().putLong("unlock_time_$targetApp", System.currentTimeMillis()).apply()
+                    // WARNING FIX: Using the modern .edit {} lambda for SharedPreferences
+                    prefs.edit { putLong("unlock_time_$targetApp", System.currentTimeMillis()) }
                     val allowedTime = prefs.getInt("time_$targetApp", 5)
                     Toast.makeText(this@LockActivity, "Unlocked for $allowedTime minutes!", Toast.LENGTH_SHORT).show()
 
@@ -214,20 +221,15 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 val rawY = event.values[1]
                 val rawZ = event.values[2]
 
-                // --- 1. VISUALS: The Low-Pass Filter ---
-                // Calculate where the bubble *should* be based on raw data
                 val targetX = -rawX * 40f
                 val targetY = rawY * 40f
 
-                // Glide the bubble smoothly toward the target (removes jitter/hardware noise)
                 smoothedX += (targetX - smoothedX) * SMOOTHING_FACTOR
                 smoothedY += (targetY - smoothedY) * SMOOTHING_FACTOR
 
                 wobbleBubble.translationX = smoothedX
                 wobbleBubble.translationY = smoothedY
 
-                // --- 2. LOGIC: The Anti-Cheat Engine ---
-                // We still use the instant, raw hardware data to detect cheating
                 val magnitudeSq = (rawX * rawX) + (rawY * rawY) + (rawZ * rawZ)
 
                 if (magnitudeSq < MIN_TREMOR_SQ) {

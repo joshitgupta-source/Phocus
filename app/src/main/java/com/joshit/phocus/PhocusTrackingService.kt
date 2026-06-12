@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
-import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
@@ -14,6 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlin.time.Duration.Companion.milliseconds
 
 class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
@@ -33,9 +33,9 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     override fun onCreate() {
         super.onCreate()
-        prefs = getSharedPreferences("FocusCamPrefs", Context.MODE_PRIVATE)
-        powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
+        powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        usageStatsManager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
 
         // Initialize cache and listener
         blockedAppsCache = prefs.getStringSet("blocked_packages", emptySet())?.toSet() ?: emptySet()
@@ -85,9 +85,9 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
                             }
                         }
                     }
-                    delay(750)
+                    delay(750.milliseconds)
                 } else {
-                    delay(5000)
+                    delay(5000.milliseconds)
                 }
             }
         }
@@ -101,7 +101,7 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         startActivity(homeIntent)
 
         scope.launch(Dispatchers.Main) {
-            delay(400)
+            delay(400.milliseconds)
             val lockIntent = Intent(this@PhocusTrackingService, LockActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 putExtra("TARGET_APP", targetPackage)
@@ -162,6 +162,9 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         super.onDestroy()
         isTracking = false
         prefs.unregisterOnSharedPreferenceChangeListener(this)
+
+        // This is the silver bullet. It instantly kills the endless tracking loop
+        // the moment the service is stopped by the user or the system.
         scope.cancel()
     }
 }

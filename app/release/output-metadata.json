@@ -12,8 +12,8 @@
       "filters": [],
       "attributes": [],
       "versionCode": 6,
-      "versionName": "1.6.5",
-      "outputFile": "Phocus_v1.6.5-release.apk"
+      "versionName": "1.6.6",
+      "outputFile": "Phocus_v1.6.6-release.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/Phocus_v1.6.5-release.dm"
+        "baselineProfiles/1/Phocus_v1.6.6-release.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/Phocus_v1.6.5-release.dm"
+        "baselineProfiles/0/Phocus_v1.6.6-release.dm"
       ]
     }
   ],

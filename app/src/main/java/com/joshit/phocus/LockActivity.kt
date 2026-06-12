@@ -28,14 +28,14 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private var linearAccel: Sensor? = null
     private var gravitySensor: Sensor? = null
     private var vibrator: Vibrator? = null
-    private lateinit var prefs: SharedPreferences // OPTIMIZATION: Cache globally
+    private lateinit var prefs: SharedPreferences
 
     // --- APP STATE ---
     private var targetApp: String = ""
     private var isPenalty = false
     private var isAppSetupBarrier = false
 
-    // --- UI ELEMENTS & CACHED COLORS ---
+    // --- UI ELEMENTS ---
     private lateinit var statusText: TextView
     private lateinit var timerText: TextView
     private lateinit var wobbleBubble: View
@@ -44,21 +44,25 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private val colorRed = Color.parseColor("#CF6679")
     private val colorWhite = Color.WHITE
 
-    // --- TIMERS & CHEAT DETECTION ---
+    // --- TIMERS & LOGIC ---
     private var countDownTimer: CountDownTimer? = null
     private var isTimerRunning = false
     private var isPhoneFlat = false
     private var isOnStand = false
-
     private var deadStillFrames = 0
+
     private var timeLeftMs = 60000L
-
-    // BUG FIX: Prevent the 50x-per-second vibration spam loop
     private var lastPenaltyTime = 0L
-    private val PENALTY_COOLDOWN_MS = 1000L
 
+    private val PENALTY_COOLDOWN_MS = 1000L
     private val ACCEL_THRESHOLD_SQ = 0.5f
     private val MIN_TREMOR_SQ = 0.005f
+
+    // --- NEW: PHYSICS ENGINE VARIABLES ---
+    private var smoothedX = 0f
+    private var smoothedY = 0f
+    // 0.2f means: Take 20% of the new raw movement, keep 80% of the old smooth movement
+    private val SMOOTHING_FACTOR = 0.2f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,8 +71,19 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         supportActionBar?.hide()
 
         prefs = getSharedPreferences("FocusCamPrefs", Context.MODE_PRIVATE)
+        statusText = findViewById(R.id.statusText)
+        timerText = findViewById(R.id.timerText)
+        wobbleBubble = findViewById(R.id.wobbleBubble)
 
-        // --- PREVENT THE SWIPE-BACK GLITCH LOOP ---
+        targetApp = intent.getStringExtra("TARGET_APP") ?: ""
+        isPenalty = intent.getBooleanExtra("IS_PENALTY", false)
+        isAppSetupBarrier = intent.getBooleanExtra("IS_APP_SETUP_BARRIER", false)
+
+        timeLeftMs = when {
+            isPenalty -> 90000L
+            else -> 60000L
+        }
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val homeIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -80,23 +95,11 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             }
         })
 
-        statusText = findViewById(R.id.statusText)
-        timerText = findViewById(R.id.timerText)
-        wobbleBubble = findViewById(R.id.wobbleBubble)
-
-        targetApp = intent.getStringExtra("TARGET_APP") ?: ""
-        isPenalty = intent.getBooleanExtra("IS_PENALTY", false)
-        isAppSetupBarrier = intent.getBooleanExtra("IS_APP_SETUP_BARRIER", false)
-
-        timeLeftMs = when {
-            isAppSetupBarrier -> 60000L
-            isPenalty -> 90000L
-            else -> 60000L
-        }
-
         restoreDefaultStatus()
+        setupHardware()
+    }
 
-        // Initialize Sensors
+    private fun setupHardware() {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         linearAccel = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
@@ -112,19 +115,21 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        // We restore SENSOR_DELAY_GAME here to feed our smoothing algorithm enough data
         linearAccel?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+
         startStillnessTimer(timeLeftMs)
     }
 
     private fun startStillnessTimer(timeToStart: Long) {
         countDownTimer?.cancel()
+
         countDownTimer = object : CountDownTimer(timeToStart, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 timeLeftMs = millisUntilFinished
                 isTimerRunning = true
-                // OPTIMIZATION: Fast string concatenation
-                timerText.text = (millisUntilFinished / 1000).toString() + "s"
+                timerText.text = "${millisUntilFinished / 1000}s"
             }
 
             override fun onFinish() {
@@ -138,10 +143,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                     val allowedTime = prefs.getInt("time_$targetApp", 5)
                     Toast.makeText(this@LockActivity, "Unlocked for $allowedTime minutes!", Toast.LENGTH_SHORT).show()
 
-                    // NEW: Forcefully launch the app they just unlocked!
                     val launchIntent = packageManager.getLaunchIntentForPackage(targetApp)
                     if (launchIntent != null) {
-                        // Clear the task so it launches cleanly
                         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         startActivity(launchIntent)
                     }
@@ -154,7 +157,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     private fun triggerHapticPenalty() {
         val now = System.currentTimeMillis()
-        // BUG FIX: Ensure penalty only triggers once per second, saving battery and UI threads
         if (now - lastPenaltyTime < PENALTY_COOLDOWN_MS) return
         lastPenaltyTime = now
 
@@ -166,11 +168,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         }
 
         if (isTimerRunning) {
-            val resetTime = when {
-                isAppSetupBarrier -> 60000L
-                isPenalty -> 90000L
-                else -> 60000L
-            }
+            val resetTime = if (isPenalty) 90000L else 60000L
             startStillnessTimer(resetTime)
             statusText.text = "Moved! Timer Reset"
             statusText.setTextColor(colorRed)
@@ -190,7 +188,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
 
-        // OPTIMIZATION: Fast routing using `when` block
         when (event.sensor.type) {
             Sensor.TYPE_GRAVITY -> {
                 val zGravity = event.values[2]
@@ -213,14 +210,25 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             Sensor.TYPE_LINEAR_ACCELERATION -> {
                 if (isPhoneFlat) return
 
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
+                val rawX = event.values[0]
+                val rawY = event.values[1]
+                val rawZ = event.values[2]
 
-                wobbleBubble.translationX = -x * 40f
-                wobbleBubble.translationY = y * 40f
+                // --- 1. VISUALS: The Low-Pass Filter ---
+                // Calculate where the bubble *should* be based on raw data
+                val targetX = -rawX * 40f
+                val targetY = rawY * 40f
 
-                val magnitudeSq = (x * x) + (y * y) + (z * z)
+                // Glide the bubble smoothly toward the target (removes jitter/hardware noise)
+                smoothedX += (targetX - smoothedX) * SMOOTHING_FACTOR
+                smoothedY += (targetY - smoothedY) * SMOOTHING_FACTOR
+
+                wobbleBubble.translationX = smoothedX
+                wobbleBubble.translationY = smoothedY
+
+                // --- 2. LOGIC: The Anti-Cheat Engine ---
+                // We still use the instant, raw hardware data to detect cheating
+                val magnitudeSq = (rawX * rawX) + (rawY * rawY) + (rawZ * rawZ)
 
                 if (magnitudeSq < MIN_TREMOR_SQ) {
                     deadStillFrames++

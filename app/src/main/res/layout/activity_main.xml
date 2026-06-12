@@ -11,7 +11,8 @@
         android:id="@+id/mainContent"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:paddingHorizontal="16dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
         android:focusable="true"
         android:focusableInTouchMode="true"
         android:visibility="gone">
@@ -53,10 +54,11 @@
             android:textColor="#000000"
             android:textColorHint="#666666"
             android:textCursorDrawable="@null"
-            android:inputType="textNoSuggestions"
+            android:inputType="text|textNoSuggestions"
+            android:singleLine="true"
             android:imeOptions="actionSearch"
-            android:maxLines="1"
-            android:paddingHorizontal="12dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/appTitle" />
@@ -78,7 +80,6 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="?android:attr/colorBackground"
-        android:elevation="10dp"
         android:padding="32dp">
 
         <TextView
@@ -98,7 +99,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Permission Required"
+            android:text="Permissions Required"
             android:textColor="?android:attr/textColorPrimary"
             android:textSize="24sp"
             android:textStyle="bold"
@@ -113,8 +114,8 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="Phocus needs Accessibility access to detect when you open distracting apps. We do not collect or share any data."
-            android:textColor="#888888"
+            android:text="Phocus requires Usage Access and Display Over Other Apps to securely block distractions. We do not collect or share data."
+            android:textColor="?android:attr/textColorSecondary"
             android:textSize="16sp"
             app:layout_constraintBottom_toTopOf="@id/grantPermissionBtn"
             app:layout_constraintEnd_toEndOf="parent"

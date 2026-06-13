@@ -30,12 +30,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // Automatically handles processing off the Main UI thread
         viewModelScope.launch(Dispatchers.IO) {
             val pm = getApplication<Application>().packageManager
+            // Grab our own package name from the Application context
+            val myPackageName = getApplication<Application>().packageName
+
             val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
             }
 
             // Optimized Pipeline: Deduplicate tasks BEFORE heavy icon allocation
             val launchableApps = pm.queryIntentActivities(mainIntent, 0)
+                // --- THE UPSTREAM FILTER: Kills Phocus from the list instantly ---
+                .filter { it.activityInfo.packageName != myPackageName }
                 .distinctBy { it.activityInfo.packageName }
                 .map { resolveInfo ->
                     AppInfo(

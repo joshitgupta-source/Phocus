@@ -3,7 +3,6 @@ package com.joshit.phocus
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
-import android.graphics.Color
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -22,6 +21,11 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 @SuppressLint("SetTextI18n") // WARNING FIX: Silences all hardcoded English text warnings
 class LockActivity : AppCompatActivity(), SensorEventListener {
@@ -43,10 +47,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var timerText: TextView
     private lateinit var wobbleBubble: View
 
-    // WARNING FIX: Using modern .toColorInt() KTX extension
-    private val colorMint = "#DAFFDE".toColorInt()
+
     private val colorRed = "#CF6679".toColorInt()
-    private val colorWhite = Color.WHITE
 
     // --- TIMERS & LOGIC ---
     private var countDownTimer: CountDownTimer? = null
@@ -57,6 +59,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     private var timeLeftMs = 60000L
     private var lastPenaltyTime = 0L
+
+    private var textResetJob: Job? = null
 
     // WARNING FIX: Added 'const' to all variables inside the companion object
     companion object {
@@ -179,6 +183,13 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             startStillnessTimer(resetTime)
             statusText.text = "Moved! Timer Reset"
             statusText.setTextColor(colorRed)
+
+            // --- THE COROUTINE FIX ---
+            textResetJob?.cancel()
+            textResetJob = lifecycleScope.launch {
+                delay(2000.milliseconds)
+                restoreDefaultStatus()
+            }
         }
     }
 
@@ -188,7 +199,21 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             isPenalty -> "Penalty Phase!\nHold for 90 seconds."
             else -> "Hold perfectly still"
         }
-        statusText.setTextColor(if (isAppSetupBarrier) colorMint else colorWhite)
+
+        // --- THE INVISIBLE INK FIX ---
+        // Safely unwrap the dynamic system color whether it's a raw hex or a resource reference
+        val typedValue = android.util.TypedValue()
+        theme.resolveAttribute(android.R.attr.textColorPrimary, typedValue, true)
+        val dynamicTextColor = if (typedValue.resourceId != 0) {
+            androidx.core.content.ContextCompat.getColor(this, typedValue.resourceId)
+        } else {
+            typedValue.data
+        }
+
+        val themeIndigo = androidx.core.content.ContextCompat.getColor(this, R.color.phocus_indigo)
+
+        // Apply the colors dynamically!
+        statusText.setTextColor(if (isAppSetupBarrier) themeIndigo else dynamicTextColor)
         wobbleBubble.alpha = 1.0f
     }
 
@@ -262,6 +287,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         super.onPause()
         sensorManager.unregisterListener(this)
         countDownTimer?.cancel()
+        textResetJob?.cancel() // Good practice to clean up coroutines when the activity pauses
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}

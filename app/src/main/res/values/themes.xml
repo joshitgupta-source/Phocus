@@ -13,4 +13,15 @@
         <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
         <!-- Customize your theme here. -->
     </style>
+
+    <style name="PhocusDropdownTheme" parent="ThemeOverlay.AppCompat.DayNight">
+    <item name="colorControlHighlight">#4D3700B3</item>
+    <item name="colorControlActivated">#4D3700B3</item>
+    <item name="colorAccent">#4D3700B3</item>
+    <item name="colorPrimary">#4D3700B3</item>
+
+    <item name="colorPrimaryContainer">#4D3700B3</item>
+    <item name="colorSecondaryContainer">#4D3700B3</item>
+    <item name="colorSurfaceVariant">#4D3700B3</item>
+</style>
 </resources>

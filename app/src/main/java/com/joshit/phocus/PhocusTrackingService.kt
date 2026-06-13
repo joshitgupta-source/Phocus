@@ -85,7 +85,7 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
                             }
                         }
                     }
-                    delay(750.milliseconds)
+                    delay(500.milliseconds)
                 } else {
                     delay(5000.milliseconds)
                 }

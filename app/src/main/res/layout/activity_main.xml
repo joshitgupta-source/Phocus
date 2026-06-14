@@ -12,8 +12,8 @@
         android:id="@+id/mainContent"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
+        android:paddingStart="7dp"
+        android:paddingEnd="7dp"
         android:focusable="true"
         android:focusableInTouchMode="true"
         android:visibility="gone">
@@ -36,6 +36,7 @@
             android:layout_height="40dp"
             android:backgroundTint="@color/phocus_indigo"
             android:text="💡 Theme"
+            app:cornerRadius="8.8dp"
             android:textColor="#FFFFFF"
             android:textSize="12sp"
             app:layout_constraintBottom_toBottomOf="@id/appTitle"
@@ -46,7 +47,7 @@
             android:id="@+id/searchInput"
             android:layout_width="0dp"
             android:layout_height="50dp"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="10dp"
             android:background="@drawable/bg_search_box"
             android:drawableStart="@android:drawable/ic_menu_search"
             android:drawableTint="#000000"
@@ -68,11 +69,45 @@
             android:id="@+id/appRecyclerView"
             android:layout_width="0dp"
             android:layout_height="0dp"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="4dp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/searchInput" />
+
+        <!-- Add this right below your appRecyclerView -->
+
+        <com.joshit.phocus.AlphabetTrackView
+            android:id="@+id/alphabetTrack"
+            android:layout_width="22dp"
+            android:layout_height="0dp"
+
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="30dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:background="@drawable/bg_alphabet_track"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/searchInput" />
+
+        <TextView
+            android:id="@+id/fastScrollBubble"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:layout_marginEnd="24dp"
+            android:background="@drawable/shape_fast_scroll_bubble"
+            android:gravity="center"
+            android:textColor="#FFFFFF"
+            android:textSize="35sp"
+            android:textStyle="bold"
+            android:alpha="0.90"
+            android:visibility="gone"
+            tools:text="A"
+            tools:visibility="visible"
+            app:layout_constraintEnd_toStartOf="@id/alphabetTrack"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 

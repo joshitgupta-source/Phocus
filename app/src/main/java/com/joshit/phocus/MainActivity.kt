@@ -38,7 +38,7 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.launch
 import androidx.core.net.toUri
 
-@SuppressLint("SetTextI18n") // WARNING FIX: Prevents hardcoded UI text and string concatenation warnings
+@SuppressLint("SetTextI18n")
 class MainActivity : AppCompatActivity() {
 
     private val viewModel: AppViewModel by viewModels()
@@ -47,6 +47,9 @@ class MainActivity : AppCompatActivity() {
     private val blockedApps = mutableSetOf<String>()
     private var isCurrentlyUnlocked = false
     private lateinit var appAdapter: AppAdapter
+
+    // Cache the unfiltered list to allow dynamic grouping
+    private var currentAppList = listOf<AppInfo>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,9 +61,11 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         blockedApps.addAll(prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet())
 
-        // --- UI SETUP ---
         val recyclerView = findViewById<RecyclerView>(R.id.appRecyclerView)
+
+        // --- Clean, standard LayoutManager ---
         recyclerView.layoutManager = LinearLayoutManager(this)
+
         appAdapter = AppAdapter(emptyList())
         recyclerView.adapter = appAdapter
 
@@ -69,7 +74,11 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.appsToDisplay.collect { apps ->
-                    appAdapter.updateApps(apps)
+                    // 1. Filter out Phocus
+                    currentAppList = apps.filter { it.packageName != packageName }
+
+                    // 2. Automatically group them into Blocked and Unblocked
+                    refreshAppListUI()
 
                     if (searchInput.text.isEmpty()) {
                         recyclerView.scrollToPosition(0)
@@ -78,7 +87,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // --- SEARCH BAR LOGIC ---
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -87,13 +95,11 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // WARNING FIX: Cleaned up long, redundant android.view.* qualifier prefixes
         searchInput.setOnEditorActionListener { v, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH ||
                 actionId == EditorInfo.IME_ACTION_DONE ||
                 (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
 
-                // WARNING FIX: Removed Context. prefix from INPUT_METHOD_SERVICE
                 val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(v.windowToken, 0)
                 v.clearFocus()
@@ -102,9 +108,59 @@ class MainActivity : AppCompatActivity() {
                 false
             }
         }
+
+        // --- INTEGRATED: Alphabet Fast Scroll Layout Engine Connections (UPDATED WITH TOUCH Y) ---
+        val alphabetTrack = findViewById<AlphabetTrackView>(R.id.alphabetTrack)
+        val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
+
+        alphabetTrack.onLetterTouchListener = { letter, action, touchY ->
+            when (action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    fastScrollBubble.text = letter.toString()
+                    fastScrollBubble.visibility = View.VISIBLE
+
+                    // Compute dynamic vertical placement tracking the finger
+                    fastScrollBubble.post {
+                        val trackTopOffset = alphabetTrack.top
+                        val halfBubbleHeight = fastScrollBubble.height / 2f
+
+                        // Set layout position absolute alignment matching finger touch
+                        fastScrollBubble.y = trackTopOffset + touchY - halfBubbleHeight
+                    }
+
+                    val position = appAdapter.getPositionForLetter(letter)
+                    if (position != -1) {
+                        (recyclerView.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, 0)
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    fastScrollBubble.visibility = View.GONE
+                }
+            }
+        }
     }
 
-    @Suppress("DEPRECATION") // WARNING FIX: Acknowledges manual status bar color assignment for API 35+
+    // The Engine that dynamically builds your two groups
+    private fun refreshAppListUI() {
+        val blocked = currentAppList.filter { blockedApps.contains(it.packageName) }.sortedBy { it.name.lowercase() }
+        val unblocked = currentAppList.filter { !blockedApps.contains(it.packageName) }.sortedBy { it.name.lowercase() }
+
+        val displayList = mutableListOf<Any>()
+
+        if (blocked.isNotEmpty()) {
+            displayList.add("Blocked Apps")
+            displayList.addAll(blocked)
+        }
+
+        if (unblocked.isNotEmpty()) {
+            displayList.add("All Apps")
+            displayList.addAll(unblocked)
+        }
+
+        appAdapter.updateItems(displayList)
+    }
+
+    @Suppress("DEPRECATION")
     private fun setupTheme() {
         val themePrefs = getSharedPreferences("ThemeSettings", MODE_PRIVATE)
         val isLightMode = themePrefs.getBoolean("isLightMode", false)
@@ -113,14 +169,11 @@ class MainActivity : AppCompatActivity() {
             if (isLightMode) AppCompatDelegate.MODE_NIGHT_NO else AppCompatDelegate.MODE_NIGHT_YES
         )
 
-        // WARNING FIX: Upgraded to modern .toColorInt() extension string format
         window.statusBarColor = if (isLightMode) Color.WHITE else "#121212".toColorInt()
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = isLightMode
 
         findViewById<Button>(R.id.themeToggleBtn).setOnClickListener {
             val newMode = !themePrefs.getBoolean("isLightMode", false)
-
-            // WARNING FIX: Used native Kotlin .edit {} lambda instead of Java .edit().apply()
             themePrefs.edit { putBoolean("isLightMode", newMode) }
 
             AppCompatDelegate.setDefaultNightMode(
@@ -135,7 +188,6 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         if (isCurrentlyUnlocked) {
-            // WARNING FIX: Modernized SharedPreferences transaction
             prefs.edit { putLong("focuscam_last_active", System.currentTimeMillis()) }
         }
     }
@@ -181,7 +233,6 @@ class MainActivity : AppCompatActivity() {
                     startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
                     Toast.makeText(this, "Please grant Usage Access to Phocus", Toast.LENGTH_LONG).show()
                 } else {
-                    // WARNING FIX: Simplified logic. The compiler knows this is the only remaining option!
                     val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri())
                     startActivity(intent)
                     Toast.makeText(this, "Please allow Phocus to Display Over Other Apps", Toast.LENGTH_LONG).show()
@@ -191,25 +242,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hasUsageStatsPermission(): Boolean {
-        // WARNING FIX: Removed Context. prefix from APP_OPS_SERVICE
         val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
-
         @Suppress("DEPRECATION")
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            appOps.unsafeCheckOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                Process.myUid(),
-                packageName
-            )
+            appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         } else {
             @Suppress("DEPRECATION")
-            appOps.checkOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                Process.myUid(),
-                packageName
-            )
+            appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         }
-
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
@@ -217,12 +257,10 @@ class MainActivity : AppCompatActivity() {
         if (event?.action == MotionEvent.ACTION_DOWN) {
             val v = currentFocus
             if (v is EditText) {
-                // WARNING FIX: Replaced full class layout reference with a standard Rect() import
                 val outRect = Rect()
                 v.getGlobalVisibleRect(outRect)
                 if (!outRect.contains(event.rawX.toInt(), event.rawY.toInt())) {
                     v.clearFocus()
-                    // WARNING FIX: Removed Context. prefix from INPUT_METHOD_SERVICE
                     val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
                     imm.hideSoftInputFromWindow(v.windowToken, 0)
                 }
@@ -230,10 +268,10 @@ class MainActivity : AppCompatActivity() {
         }
         return super.dispatchTouchEvent(event)
     }
+
     @SuppressLint("BatteryLife")
     private fun requestBatteryUnrestricted() {
         try {
-            // WARNING FIX: Removed Context. prefix from POWER_SERVICE
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -248,33 +286,60 @@ class MainActivity : AppCompatActivity() {
     }
 
     // --- RECYCLERVIEW ADAPTER ---
-    inner class AppAdapter(private var apps: List<AppInfo>) : RecyclerView.Adapter<AppAdapter.ViewHolder>() {
+    inner class AppAdapter(private var items: List<Any>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+        private val TYPE_HEADER = 0
+        private val TYPE_APP = 1
 
         private val timeOptions = arrayOf("5 min", "10 min", "20 min", "30 min")
         private val timeValues = intArrayOf(5, 10, 20, 30)
 
-        override fun getItemCount(): Int = apps.size
+        override fun getItemViewType(position: Int): Int {
+            return if (items[position] is String) TYPE_HEADER else TYPE_APP
+        }
 
-        fun updateApps(newApps: List<AppInfo>) {
+        override fun getItemCount(): Int = items.size
+
+        // Safe alphabetical indexing system
+        fun getPositionForLetter(letter: Char): Int {
+            return items.indexOfFirst { item ->
+                if (item is AppInfo) {
+                    val firstChar = item.name.firstOrNull()?.uppercaseChar() ?: 'A'
+                    firstChar >= letter.uppercaseChar()
+                } else {
+                    false
+                }
+            }
+        }
+
+        fun updateItems(newItems: List<Any>) {
             val diffCallback = object : DiffUtil.Callback() {
-                override fun getOldListSize() = apps.size
-                override fun getNewListSize() = newApps.size
+                override fun getOldListSize() = items.size
+                override fun getNewListSize() = newItems.size
 
                 override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                    return apps[oldItemPosition].packageName == newApps[newItemPosition].packageName
+                    val old = items[oldItemPosition]
+                    val new = newItems[newItemPosition]
+                    if (old is String && new is String) return old == new
+                    if (old is AppInfo && new is AppInfo) return old.packageName == new.packageName
+                    return false
                 }
 
                 override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                    return apps[oldItemPosition] == newApps[newItemPosition]
+                    return items[oldItemPosition] == newItems[newItemPosition]
                 }
             }
 
             val diffResult = DiffUtil.calculateDiff(diffCallback)
-            apps = newApps
+            items = newItems
             diffResult.dispatchUpdatesTo(this)
         }
 
-        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        inner class HeaderViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val headerTitle: TextView = view.findViewById(R.id.headerTitle)
+        }
+
+        inner class AppViewHolder(view: View) : RecyclerView.ViewHolder(view) {
             val icon: ImageView = view.findViewById(R.id.appIcon)
             val name: TextView = view.findViewById(R.id.appName)
             val checkBox: CheckBox = view.findViewById(R.id.appCheckBox)
@@ -289,7 +354,6 @@ class MainActivity : AppCompatActivity() {
                     val dropView = super.getDropDownView(position, convertView, parent) as TextView
                     dropView.setPadding(40, 32, 40, 32)
                     if (position == timeSpinner.selectedItemPosition) {
-                        // WARNING FIX: Modernized color translation syntax
                         dropView.setBackgroundColor("#446200EE".toColorInt())
                         dropView.setTypeface(null, Typeface.BOLD)
                     } else {
@@ -306,52 +370,74 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false)
-            return ViewHolder(view)
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            return if (viewType == TYPE_HEADER) {
+                val view = LayoutInflater.from(parent.context).inflate(R.layout.item_header, parent, false)
+                HeaderViewHolder(view)
+            } else {
+                val view = LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false)
+                AppViewHolder(view)
+            }
         }
 
-        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-            val app = apps[position]
-            holder.name.text = app.name
-            holder.icon.setImageDrawable(app.icon)
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            if (holder is HeaderViewHolder) {
+                holder.headerTitle.text = items[position] as String
+            } else if (holder is AppViewHolder) {
+                val app = items[position] as AppInfo
+                holder.name.text = app.name
+                holder.icon.setImageDrawable(app.icon)
 
-            holder.checkBox.setOnCheckedChangeListener(null)
-            holder.checkBox.isChecked = blockedApps.contains(app.packageName)
+                val isAppBlocked = blockedApps.contains(app.packageName)
 
-            holder.checkBox.setOnCheckedChangeListener { _, isChecked ->
-                if (isChecked) {
-                    blockedApps.add(app.packageName)
-                    if (blockedApps.size == 1) {
-                        Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
-                        requestBatteryUnrestricted()
+                holder.checkBox.setOnCheckedChangeListener(null)
+                holder.checkBox.isChecked = isAppBlocked
+
+                // Disable & Fade the Spinner initially
+                holder.timeSpinner.isEnabled = isAppBlocked
+                holder.timeSpinner.alpha = if (isAppBlocked) 1.0f else 0.4f
+
+                holder.checkBox.setOnCheckedChangeListener { _, isChecked ->
+
+                    // Instantly lock/unlock it when tapped
+                    holder.timeSpinner.isEnabled = isChecked
+                    holder.timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
+
+                    if (isChecked) {
+                        blockedApps.add(app.packageName)
+                        if (blockedApps.size == 1) {
+                            Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
+                            requestBatteryUnrestricted()
+                        }
+                    } else {
+                        blockedApps.remove(app.packageName)
+                        if (blockedApps.isEmpty()) {
+                            Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
+                        }
                     }
-                } else {
-                    blockedApps.remove(app.packageName)
-                    if (blockedApps.isEmpty()) {
-                        Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
+
+                    prefs.edit {
+                        putStringSet("blocked_packages", blockedApps)
+                        putBoolean("isSetupComplete", blockedApps.isNotEmpty())
+                    }
+
+                    holder.itemView.post {
+                        refreshAppListUI()
                     }
                 }
 
-                // WARNING FIX: Cleaned up block assignment with .edit {} lambda block
-                prefs.edit {
-                    putStringSet("blocked_packages", blockedApps)
-                    putBoolean("isSetupComplete", blockedApps.isNotEmpty())
+                val savedTime = prefs.getInt("time_${app.packageName}", 5)
+                val spinnerIndex = timeValues.indexOf(savedTime).takeIf { it >= 0 } ?: 0
+
+                holder.timeSpinner.onItemSelectedListener = null
+                holder.timeSpinner.setSelection(spinnerIndex, false)
+
+                holder.timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                        prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
-            }
-
-            val savedTime = prefs.getInt("time_${app.packageName}", 5)
-            val spinnerIndex = timeValues.indexOf(savedTime).takeIf { it >= 0 } ?: 0
-
-            holder.timeSpinner.onItemSelectedListener = null
-            holder.timeSpinner.setSelection(spinnerIndex, false)
-
-            holder.timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                    // WARNING FIX: Modernized shared preferences commit layout
-                    prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
         }
     }

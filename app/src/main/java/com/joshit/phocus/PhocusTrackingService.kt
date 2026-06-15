@@ -18,18 +18,20 @@ import kotlin.time.Duration.Companion.milliseconds
 class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private var isTracking = false
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Dispatchers.IO + Job())
 
     private lateinit var prefs: SharedPreferences
     private lateinit var powerManager: PowerManager
     private lateinit var usageStatsManager: UsageStatsManager
 
     // --- CACHED MEMORY ENGINE ---
-    private val appStates = mutableMapOf<String, Int>()
     private var lastQueryTime = 0L
-
-    // RESTORED: Battery-saving live cache from AppBlockerService
     private var blockedAppsCache = setOf<String>()
+
+    // OPTIMIZATION: Stores pre-calculated expiration rules in RAM to prevent heavy disk I/O every 500ms
+    private val timeLimitCache = mutableMapOf<String, AppRule>()
+
+    private data class AppRule(val expirationTime: Long, val penaltyEndTime: Long, val isLocked: Boolean)
 
     override fun onCreate() {
         super.onCreate()
@@ -37,18 +39,38 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         powerManager = getSystemService(POWER_SERVICE) as PowerManager
         usageStatsManager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
 
-        // Initialize cache and listener
-        blockedAppsCache = prefs.getStringSet("blocked_packages", emptySet())?.toSet() ?: emptySet()
         prefs.registerOnSharedPreferenceChangeListener(this)
 
-        lastQueryTime = System.currentTimeMillis() - (1000 * 60 * 60)
+        // Initialize cache
+        updateBlockCache()
+
+        lastQueryTime = System.currentTimeMillis() - 60_000L // Only look back 1 minute to start
         startForeground(1, createNotification())
     }
 
-    // RESTORED: Only updates memory when the user actually changes settings
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
-        if (key == "blocked_packages") {
-            blockedAppsCache = prefs.getStringSet("blocked_packages", emptySet())?.toSet() ?: emptySet()
+        // Trigger cache refresh if blocklist OR lock times change
+        if (key == "blocked_packages" || key?.startsWith("unlock_time_") == true || key?.startsWith("time_") == true) {
+            updateBlockCache()
+        }
+    }
+
+    private fun updateBlockCache() {
+        blockedAppsCache = prefs.getStringSet("blocked_packages", emptySet())?.toSet() ?: emptySet()
+        timeLimitCache.clear()
+
+        val now = System.currentTimeMillis()
+
+        for (app in blockedAppsCache) {
+            val lastUnlockTime = prefs.getLong("unlock_time_$app", 0L)
+            val allowedTimeMs = prefs.getInt("time_$app", 5) * 60_000L
+            val expirationTime = lastUnlockTime + allowedTimeMs
+
+            timeLimitCache[app] = AppRule(
+                expirationTime = expirationTime,
+                penaltyEndTime = expirationTime + 600_000L,
+                isLocked = now > expirationTime
+            )
         }
     }
 
@@ -62,34 +84,51 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private fun startTrackingLoop() {
         scope.launch {
-            while (isTracking) {
-                if (powerManager.isInteractive) {
-                    if (blockedAppsCache.isNotEmpty()) {
-                        val visibleApps = getVisiblePackages()
-
-                        for (app in visibleApps) {
-                            if (app in blockedAppsCache) {
-                                val lastUnlockTime = prefs.getLong("unlock_time_$app", 0L)
-                                val allowedTimeMs = prefs.getInt("time_$app", 5) * 60_000L
-
-                                val expirationTime = lastUnlockTime + allowedTimeMs
-                                val penaltyEndTime = expirationTime + 600_000L // 10 minute penalty
-                                val now = System.currentTimeMillis()
-
-                                // The Heartbeat Kick: Triggers instantly if time expires
-                                if (now > expirationTime) {
-                                    val isPenalty = lastUnlockTime > 0L && now <= penaltyEndTime
-                                    showBlockScreen(app, isPenalty)
-                                    break
-                                }
-                            }
-                        }
-                    }
+            while (isActive && isTracking) {
+                if (powerManager.isInteractive && blockedAppsCache.isNotEmpty()) {
+                    checkUsageEvents()
                     delay(500.milliseconds)
                 } else {
+                    // Deep sleep when screen is off or no rules apply
                     delay(5000.milliseconds)
                 }
             }
+        }
+    }
+
+    // OPTIMIZATION: Checks events and triggers locks in a single, lean pass
+    private fun checkUsageEvents() {
+        val endTime = System.currentTimeMillis()
+        val usageEvents = usageStatsManager.queryEvents(lastQueryTime, endTime)
+        val event = UsageEvents.Event()
+
+        var targetToBlock: String? = null
+        var isPenalty = false
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            val pkg = event.packageName
+
+            // Ignore system UI and our own app instantly
+            if (pkg == packageName || pkg == "com.android.systemui") continue
+
+            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED || event.eventType == UsageEvents.Event.ACTIVITY_PAUSED) {
+                if (pkg in blockedAppsCache) {
+                    val rule = timeLimitCache[pkg]
+
+                    if (rule != null && rule.isLocked) {
+                        targetToBlock = pkg
+                        isPenalty = endTime <= rule.penaltyEndTime
+                        break // Stop reading events immediately once a violation is found
+                    }
+                }
+            }
+        }
+
+        lastQueryTime = endTime
+
+        targetToBlock?.let {
+            showBlockScreen(it, isPenalty)
         }
     }
 
@@ -111,43 +150,11 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
-    private fun getVisiblePackages(): List<String> {
-        val endTime = System.currentTimeMillis()
-        val usageEvents = usageStatsManager.queryEvents(lastQueryTime, endTime)
-        val event = UsageEvents.Event()
-
-        while (usageEvents.hasNextEvent()) {
-            usageEvents.getNextEvent(event)
-            val type = event.eventType
-
-            if (type == UsageEvents.Event.ACTIVITY_RESUMED ||
-                type == UsageEvents.Event.ACTIVITY_PAUSED ||
-                type == UsageEvents.Event.ACTIVITY_STOPPED) {
-                appStates[event.packageName] = type
-            }
-        }
-
-        lastQueryTime = endTime
-
-        val visibleApps = mutableListOf<String>()
-        for ((pkg, state) in appStates) {
-            // RESTORED: The System Immunity Rule
-            if (pkg == packageName || pkg == "com.android.systemui") continue
-
-            if (state == UsageEvents.Event.ACTIVITY_RESUMED || state == UsageEvents.Event.ACTIVITY_PAUSED) {
-                visibleApps.add(pkg)
-            }
-        }
-
-        return visibleApps
-    }
-
     private fun createNotification(): Notification {
         val channelId = "phocus_service"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "Phocus Blocker", NotificationManager.IMPORTANCE_LOW)
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Phocus Guard is Active")
@@ -162,9 +169,6 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         super.onDestroy()
         isTracking = false
         prefs.unregisterOnSharedPreferenceChangeListener(this)
-
-        // This is the silver bullet. It instantly kills the endless tracking loop
-        // the moment the service is stopped by the user or the system.
         scope.cancel()
     }
 }

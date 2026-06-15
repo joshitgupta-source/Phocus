@@ -2,4 +2,5 @@
 <resources>
     <color name="alphabet_track_color">#333333</color>
     <color name="alphabet_thumb_color">#36415A</color>
+    <color name="header_text_color">#FFFFFF</color>
 </resources>

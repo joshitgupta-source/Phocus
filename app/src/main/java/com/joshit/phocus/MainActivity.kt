@@ -447,7 +447,8 @@ class MainActivity : AppCompatActivity() {
                 checkBox.setOnCheckedChangeListener { _, isChecked ->
                     if (isBinding) return@setOnCheckedChangeListener
 
-                    val pos = bindingAdapterPosition
+                    // THE FIX: Changed to adapterPosition for library compatibility
+                    val pos = adapterPosition
                     if (pos != RecyclerView.NO_POSITION) {
                         val app = items[pos] as? AppInfo ?: return@setOnCheckedChangeListener
 
@@ -480,9 +481,10 @@ class MainActivity : AppCompatActivity() {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                         if (isBinding) return
 
-                        val adapterPos = bindingAdapterPosition
-                        if (adapterPos != RecyclerView.NO_POSITION) {
-                            val app = items[adapterPos] as? AppInfo ?: return
+                        // THE FIX: Changed to adapterPosition for library compatibility
+                        val currentAdapterPos = adapterPosition
+                        if (currentAdapterPos != RecyclerView.NO_POSITION) {
+                            val app = items[currentAdapterPos] as? AppInfo ?: return
                             prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
                         }
                     }

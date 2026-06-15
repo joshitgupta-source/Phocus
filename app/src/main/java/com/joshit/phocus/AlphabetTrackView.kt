@@ -8,6 +8,7 @@ import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.core.content.ContextCompat
 
 class AlphabetTrackView @JvmOverloads constructor(
@@ -25,8 +26,13 @@ class AlphabetTrackView @JvmOverloads constructor(
     private var isTouching = false
     private val thumbRect = RectF()
 
-    // --- OPTIMIZATION: Pre-calculated Layout Values ---
-    // Moving these out of onDraw saves hundreds of math operations per second.
+    // --- NEW: GESTURE CONFLICT ENGINE VARIABLES ---
+    private var startX = 0f
+    private var startY = 0f
+    private var hasConfirmedScroll = false
+    private var touchSlop = 0f
+
+    // Pre-calculated Layout Values
     private var itemHeight = 0f
     private var xPos = 0f
     private var thumbWidth = 0f
@@ -37,12 +43,10 @@ class AlphabetTrackView @JvmOverloads constructor(
     private var maxCenterY = 0f
     private var cornerRadius = 0f
 
-    // Pre-calculate Y coordinates for the text to eliminate math inside the drawing loop
     private val textYPositions = FloatArray(26)
     private val letterCache = Array(26) { alphabet[it].toString() }
 
     init {
-        // Automatically fetch the correct text color for Light/Dark mode
         val typedValue = TypedValue()
         context.theme.resolveAttribute(android.R.attr.textColorPrimary, typedValue, true)
         val dynamicColor = if (typedValue.resourceId != 0) {
@@ -51,18 +55,18 @@ class AlphabetTrackView @JvmOverloads constructor(
             typedValue.data
         }
 
-        // Setup the Alphabet Text
         textPaint.color = dynamicColor
         textPaint.textAlign = Paint.Align.CENTER
-        textPaint.textSize = context.resources.displayMetrics.scaledDensity * 11f // Sleek text size
-        textPaint.alpha = 130 // Faded by default
+        textPaint.textSize = context.resources.displayMetrics.scaledDensity * 11f
+        textPaint.alpha = 130
 
-        // Setup the Inner Moving Pill
         thumbPaint.color = ContextCompat.getColor(context, R.color.alphabet_thumb_color)
         thumbPaint.style = Paint.Style.FILL
+
+        // THE FIX: Get the exact pixel distance Android considers an "accidental wiggle"
+        touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     }
 
-    // This runs ONCE when the view is created or resized, not every frame.
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (h == 0) return
@@ -70,8 +74,8 @@ class AlphabetTrackView @JvmOverloads constructor(
         itemHeight = h.toFloat() / alphabet.length
         xPos = w / 2f
 
-        thumbHeight = itemHeight * 2f    // YOUR CUSTOM HEIGHT
-        thumbWidth = w * 0.80f           // YOUR CUSTOM WIDTH
+        thumbHeight = itemHeight * 2f
+        thumbWidth = w * 0.80f
 
         rectLeft = (w - thumbWidth) / 2f
         rectRight = rectLeft + thumbWidth
@@ -81,7 +85,6 @@ class AlphabetTrackView @JvmOverloads constructor(
         minCenterY = (thumbHeight / 2f) + padding
         maxCenterY = h.toFloat() - (thumbHeight / 2f) - padding
 
-        // Pre-calculate exact Y coordinates for every letter
         val textOffset = ((textPaint.descent() + textPaint.ascent()) / 2)
         for (i in 0..25) {
             textYPositions[i] = (i * itemHeight) + (itemHeight / 2f) - textOffset
@@ -92,20 +95,16 @@ class AlphabetTrackView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (height == 0) return
 
-        // --- 1. DRAW THE THUMB PILL ---
-        if (currentTouchY < 0) currentTouchY = minCenterY // Initialize safely
+        if (currentTouchY < 0) currentTouchY = minCenterY
 
         val top = currentTouchY - (thumbHeight / 2f)
         val bottom = currentTouchY + (thumbHeight / 2f)
 
-        // Use pre-calculated left/right margins
         thumbRect.set(rectLeft, top, rectRight, bottom)
 
         thumbPaint.alpha = if (isTouching) 255 else 0
         canvas.drawRoundRect(thumbRect, cornerRadius, cornerRadius, thumbPaint)
 
-        // --- 2. DRAW THE ALPHABET TEXT ---
-        // Loop math is entirely gone. Just pulling from the pre-calculated arrays.
         for (i in 0..25) {
             canvas.drawText(letterCache[i], xPos, textYPositions[i], textPaint)
         }
@@ -114,33 +113,64 @@ class AlphabetTrackView @JvmOverloads constructor(
     @Suppress("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val y = event.y
-
-        // Fast bounds checking (clamps between 0 and 25 instantly)
         val index = ((y / itemHeight).toInt()).coerceIn(0, 25)
-
-        // Lock Y coordinate directly using pre-calculated boundaries
         currentTouchY = y.coerceIn(minCenterY, maxCenterY)
 
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                if (!isTouching) {
-                    textPaint.alpha = 255
-                    isTouching = true
+            MotionEvent.ACTION_DOWN -> {
+                startX = event.x
+                startY = event.y
+
+                // THE FIX: Define the 24dp Android Back Gesture Danger Zone
+                val edgeZone = 24f * context.resources.displayMetrics.density
+
+                // If they touch inside the view but OUTSIDE the Danger Zone, activate instantly!
+                hasConfirmedScroll = event.x < (width - edgeZone)
+
+                if (hasConfirmedScroll) {
+                    triggerVisuals(index, event.actionMasked)
                 }
-                invalidate()
-                onLetterTouchListener?.invoke(alphabet[index], event.actionMasked, currentTouchY)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!hasConfirmedScroll) {
+                    // They touched the Danger Zone. Check if they are pulling DOWN/UP instead of LEFT.
+                    val dx = Math.abs(event.x - startX)
+                    val dy = Math.abs(event.y - startY)
+
+                    // If vertical movement exceeds the slop threshold, it's a confirmed scroll!
+                    if (dy > touchSlop && dy > dx) {
+                        hasConfirmedScroll = true
+                    }
+                }
+
+                if (hasConfirmedScroll) {
+                    triggerVisuals(index, event.actionMasked)
+                }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                hasConfirmedScroll = false
                 if (isTouching) {
                     textPaint.alpha = 130
                     isTouching = false
                 }
                 invalidate()
+
+                // Always tell MainActivity to kill the bubble if the system takes over
                 onLetterTouchListener?.invoke(alphabet[index], event.actionMasked, currentTouchY)
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    private fun triggerVisuals(index: Int, action: Int) {
+        if (!isTouching) {
+            textPaint.alpha = 255
+            isTouching = true
+        }
+        invalidate()
+        onLetterTouchListener?.invoke(alphabet[index], action, currentTouchY)
     }
 }

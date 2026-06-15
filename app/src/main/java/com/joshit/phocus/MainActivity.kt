@@ -37,6 +37,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.launch
 import androidx.core.net.toUri
+import androidx.core.view.isGone
+import androidx.core.view.isVisible
 
 @SuppressLint("SetTextI18n")
 class MainActivity : AppCompatActivity() {
@@ -71,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
 
         fun hideScrollBar() {
-            if (alphabetTrack.visibility == View.GONE && alphabetTrack.alpha == 0f) return
+            if (alphabetTrack.isGone && alphabetTrack.alpha == 0f) return
 
             alphabetTrack.animate()
                 .translationX(alphabetTrack.width.toFloat() + 50f)
@@ -90,7 +92,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun showScrollBar() {
-            if (alphabetTrack.visibility == View.VISIBLE && alphabetTrack.translationX == 0f) return
+            if (alphabetTrack.isVisible && alphabetTrack.translationX == 0f) return
 
             alphabetTrack.visibility = View.VISIBLE
             alphabetTrack.animate()
@@ -286,9 +288,15 @@ class MainActivity : AppCompatActivity() {
             permissionOverlay.visibility = View.GONE
             mainContent.visibility = View.VISIBLE
 
+            // THE FIX: Only launch the background engine if we actually have work to do!
             val serviceIntent = Intent(this, PhocusTrackingService::class.java)
-            ContextCompat.startForegroundService(this, serviceIntent)
+            if (blockedApps.isNotEmpty()) {
+                ContextCompat.startForegroundService(this, serviceIntent)
+            } else {
+                stopService(serviceIntent) // Ensure it is completely dead
+            }
         } else {
+            // ... (Keep your existing permission denied logic here)
             permissionOverlay.visibility = View.VISIBLE
             mainContent.visibility = View.GONE
 
@@ -303,7 +311,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
+    @Suppress("DEPRECATION")
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -348,14 +356,14 @@ class MainActivity : AppCompatActivity() {
 
     inner class AppAdapter(private var items: List<Any>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
-        private val TYPE_HEADER = 0
-        private val TYPE_APP = 1
+        private val typeHeader = 0
+        private val typeApp = 1
 
         private val timeOptions = arrayOf("5 min", "10 min", "20 min", "30 min")
         private val timeValues = intArrayOf(5, 10, 20, 30)
 
         override fun getItemViewType(position: Int): Int {
-            return if (items[position] is String) TYPE_HEADER else TYPE_APP
+            return if (items[position] is String) typeHeader else typeApp
         }
 
         override fun getItemCount(): Int = items.size
@@ -447,7 +455,6 @@ class MainActivity : AppCompatActivity() {
                 checkBox.setOnCheckedChangeListener { _, isChecked ->
                     if (isBinding) return@setOnCheckedChangeListener
 
-                    // THE FIX: Changed to adapterPosition for library compatibility
                     val pos = adapterPosition
                     if (pos != RecyclerView.NO_POSITION) {
                         val app = items[pos] as? AppInfo ?: return@setOnCheckedChangeListener
@@ -455,16 +462,24 @@ class MainActivity : AppCompatActivity() {
                         timeSpinner.isEnabled = isChecked
                         timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
 
+                        val serviceIntent = Intent(this@MainActivity, PhocusTrackingService::class.java)
+
                         if (isChecked) {
                             blockedApps.add(app.packageName)
                             if (blockedApps.size == 1) {
                                 Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
                                 requestBatteryUnrestricted()
+
+                                // --- THE ENGINE BOOT: 0 to 1 app blocked! ---
+                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
                             }
                         } else {
                             blockedApps.remove(app.packageName)
                             if (blockedApps.isEmpty()) {
                                 Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
+
+                                // --- THE ENGINE KILL: Last app unchecked! ---
+                                stopService(serviceIntent)
                             }
                         }
 
@@ -494,7 +509,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-            return if (viewType == TYPE_HEADER) {
+            return if (viewType == typeHeader) {
                 HeaderViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_header, parent, false))
             } else {
                 AppViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false))

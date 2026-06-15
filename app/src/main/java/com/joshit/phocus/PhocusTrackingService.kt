@@ -49,9 +49,13 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
-        // Trigger cache refresh if blocklist OR lock times change
         if (key == "blocked_packages" || key?.startsWith("unlock_time_") == true || key?.startsWith("time_") == true) {
             updateBlockCache()
+
+            // --- THE FIX: The Self-Destruct Sequence ---
+            if (blockedAppsCache.isEmpty()) {
+                stopSelf() // Kills the service instantly from the inside!
+            }
         }
     }
 

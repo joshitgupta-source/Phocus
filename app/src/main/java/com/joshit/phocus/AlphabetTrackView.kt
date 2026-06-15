@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import androidx.core.content.ContextCompat
+import kotlin.math.abs
 
 class AlphabetTrackView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
@@ -57,7 +58,11 @@ class AlphabetTrackView @JvmOverloads constructor(
 
         textPaint.color = dynamicColor
         textPaint.textAlign = Paint.Align.CENTER
-        textPaint.textSize = context.resources.displayMetrics.scaledDensity * 11f
+        textPaint.textSize = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            11f,
+            context.resources.displayMetrics
+        )
         textPaint.alpha = 130
 
         thumbPaint.color = ContextCompat.getColor(context, R.color.alphabet_thumb_color)
@@ -135,8 +140,8 @@ class AlphabetTrackView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 if (!hasConfirmedScroll) {
                     // They touched the Danger Zone. Check if they are pulling DOWN/UP instead of LEFT.
-                    val dx = Math.abs(event.x - startX)
-                    val dy = Math.abs(event.y - startY)
+                    val dx = abs(event.x - startX)
+                    val dy = abs(event.y - startY)
 
                     // If vertical movement exceeds the slop threshold, it's a confirmed scroll!
                     if (dy > touchSlop && dy > dx) {

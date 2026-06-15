@@ -44,11 +44,16 @@
         android:layout_height="wrap_content"
         android:layout_marginEnd="4dp"
         android:minHeight="48dp"
-        android:popupBackground="?android:attr/colorBackgroundFloating"
+
+        android:dropDownWidth="73dp"
+        android:dropDownHeight="320dp"
+
+        android:popupBackground="@drawable/bg_dropdown_popup"
+        android:popupTheme="@style/TransparentSpinnerPopup"
+        android:backgroundTint="@color/alphabet_thumb_color"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@id/appCheckBox"
-        app:layout_constraintTop_toTopOf="parent"
-        android:backgroundTint="@color/phocus_indigo"/>
+        app:layout_constraintTop_toTopOf="parent" />
 
     <CheckBox
         android:id="@+id/appCheckBox"

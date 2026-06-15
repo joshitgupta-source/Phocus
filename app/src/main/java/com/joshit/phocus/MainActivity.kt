@@ -71,15 +71,51 @@ class MainActivity : AppCompatActivity() {
 
         val searchInput = findViewById<EditText>(R.id.searchInput)
 
+        // 1. FIND THE SCROLLBAR VIEWS
+        val alphabetTrack = findViewById<AlphabetTrackView>(R.id.alphabetTrack)
+        val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
+
+        // --- NEW: ANIMATION HELPER FUNCTIONS ---
+        fun hideScrollBar() {
+            if (alphabetTrack.visibility == View.GONE && alphabetTrack.alpha == 0f) return
+
+            // Slide track off the screen to the right and fade it out
+            alphabetTrack.animate()
+                .translationX(alphabetTrack.width.toFloat() + 50f)
+                .alpha(0f)
+                .setDuration(250)
+                .withEndAction { alphabetTrack.visibility = View.GONE }
+                .start()
+
+            // Smoothly shrink and fade the bubble
+            fastScrollBubble.animate()
+                .alpha(0f)
+                .scaleX(0.5f)
+                .scaleY(0.5f)
+                .setDuration(200)
+                .withEndAction { fastScrollBubble.visibility = View.GONE }
+                .start()
+        }
+
+        fun showScrollBar() {
+            if (alphabetTrack.visibility == View.VISIBLE && alphabetTrack.translationX == 0f) return
+
+            alphabetTrack.visibility = View.VISIBLE
+
+            // Slide track back to its original position
+            alphabetTrack.animate()
+                .translationX(0f)
+                .alpha(1f)
+                .setDuration(250)
+                .withEndAction(null)
+                .start()
+        }
+
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.appsToDisplay.collect { apps ->
-                    // 1. Filter out Phocus
                     currentAppList = apps.filter { it.packageName != packageName }
-
-                    // 2. Automatically group them into Blocked and Unblocked
                     refreshAppListUI()
-
                     if (searchInput.text.isEmpty()) {
                         recyclerView.scrollToPosition(0)
                     }
@@ -87,11 +123,47 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 2. FOCUS LISTENER: Trigger the smooth hide animation when tapped
+        searchInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                hideScrollBar()
+            } else if (searchInput.text.isEmpty()) {
+                showScrollBar()
+            }
+        }
+
+        // 3. TEXT WATCHER: Integrated with animations
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
             override fun afterTextChanged(s: Editable?) {
-                viewModel.searchApps(s.toString())
+                val query = s.toString().trim().lowercase()
+
+                if (query.isEmpty()) {
+                    if (!searchInput.hasFocus()) {
+                        showScrollBar()
+                    }
+                    refreshAppListUI()
+
+                    recyclerView.scrollToPosition(0)
+
+                } else {
+                    hideScrollBar()
+
+                    val smartFilteredApps = currentAppList
+                        .filter { it.name.lowercase().contains(query) }
+                        .sortedByDescending { app ->
+                            val appName = app.name.lowercase()
+                            when {
+                                appName == query -> 100
+                                appName.startsWith(query) -> 80
+                                appName.split(" ").any { it.startsWith(query) } -> 60
+                                else -> 40 - appName.indexOf(query)
+                            }
+                        }
+                    appAdapter.updateItems(smartFilteredApps)
+                }
             }
         })
 
@@ -109,22 +181,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // --- INTEGRATED: Alphabet Fast Scroll Layout Engine Connections (UPDATED WITH TOUCH Y) ---
-        val alphabetTrack = findViewById<AlphabetTrackView>(R.id.alphabetTrack)
-        val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
-
+        // --- INTEGRATED: Alphabet Fast Scroll Layout Engine ---
         alphabetTrack.onLetterTouchListener = { letter, action, touchY ->
             when (action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     fastScrollBubble.text = letter.toString()
                     fastScrollBubble.visibility = View.VISIBLE
 
-                    // Compute dynamic vertical placement tracking the finger
+                    // Reset animations just in case they were fading out
+                    fastScrollBubble.alpha = 1f
+                    fastScrollBubble.scaleX = 1f
+                    fastScrollBubble.scaleY = 1f
+
                     fastScrollBubble.post {
                         val trackTopOffset = alphabetTrack.top
                         val halfBubbleHeight = fastScrollBubble.height / 2f
-
-                        // Set layout position absolute alignment matching finger touch
                         fastScrollBubble.y = trackTopOffset + touchY - halfBubbleHeight
                     }
 
@@ -134,7 +205,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    fastScrollBubble.visibility = View.GONE
+                    // NEW: Smoothly shrink and fade the bubble when you let go of the track!
+                    fastScrollBubble.animate()
+                        .alpha(0f)
+                        .scaleX(0.5f)
+                        .scaleY(0.5f)
+                        .setDuration(150)
+                        .withEndAction { fastScrollBubble.visibility = View.GONE }
+                        .start()
                 }
             }
         }
@@ -352,9 +430,30 @@ class MainActivity : AppCompatActivity() {
             ) {
                 override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val dropView = super.getDropDownView(position, convertView, parent) as TextView
-                    dropView.setPadding(40, 32, 40, 32)
+
+
+                    // --- THE FIX: Forces the text to the absolute center of the menu! ---
+                    dropView.gravity = android.view.Gravity.CENTER
+
                     if (position == timeSpinner.selectedItemPosition) {
-                        dropView.setBackgroundColor("#446200EE".toColorInt())
+                        val density = view.context.resources.displayMetrics.density
+                        val horizontalInset = (2 * density).toInt()
+                        val verticalInset = (4 * density).toInt()
+
+                        val roundedBg = android.graphics.drawable.GradientDrawable()
+                        roundedBg.shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                        roundedBg.cornerRadius = 24f
+                        roundedBg.setColor("#446200EE".toColorInt())
+
+                        val insetBg = android.graphics.drawable.InsetDrawable(
+                            roundedBg,
+                            horizontalInset,
+                            verticalInset,
+                            horizontalInset,
+                            verticalInset
+                        )
+
+                        dropView.background = insetBg
                         dropView.setTypeface(null, Typeface.BOLD)
                     } else {
                         dropView.setBackgroundColor(Color.TRANSPARENT)
@@ -365,7 +464,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             init {
-                spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                spinnerAdapter.setDropDownViewResource(R.layout.item_spinner_centered)
                 timeSpinner.adapter = spinnerAdapter
             }
         }

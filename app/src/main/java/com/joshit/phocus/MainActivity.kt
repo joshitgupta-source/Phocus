@@ -48,7 +48,6 @@ class MainActivity : AppCompatActivity() {
     private var isCurrentlyUnlocked = false
     private lateinit var appAdapter: AppAdapter
 
-    // Cache the unfiltered list to allow dynamic grouping
     private var currentAppList = listOf<AppInfo>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,24 +61,18 @@ class MainActivity : AppCompatActivity() {
         blockedApps.addAll(prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet())
 
         val recyclerView = findViewById<RecyclerView>(R.id.appRecyclerView)
-
-        // --- Clean, standard LayoutManager ---
         recyclerView.layoutManager = LinearLayoutManager(this)
 
         appAdapter = AppAdapter(emptyList())
         recyclerView.adapter = appAdapter
 
         val searchInput = findViewById<EditText>(R.id.searchInput)
-
-        // 1. FIND THE SCROLLBAR VIEWS
         val alphabetTrack = findViewById<AlphabetTrackView>(R.id.alphabetTrack)
         val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
 
-        // --- NEW: ANIMATION HELPER FUNCTIONS ---
         fun hideScrollBar() {
             if (alphabetTrack.visibility == View.GONE && alphabetTrack.alpha == 0f) return
 
-            // Slide track off the screen to the right and fade it out
             alphabetTrack.animate()
                 .translationX(alphabetTrack.width.toFloat() + 50f)
                 .alpha(0f)
@@ -87,7 +80,6 @@ class MainActivity : AppCompatActivity() {
                 .withEndAction { alphabetTrack.visibility = View.GONE }
                 .start()
 
-            // Smoothly shrink and fade the bubble
             fastScrollBubble.animate()
                 .alpha(0f)
                 .scaleX(0.5f)
@@ -101,8 +93,6 @@ class MainActivity : AppCompatActivity() {
             if (alphabetTrack.visibility == View.VISIBLE && alphabetTrack.translationX == 0f) return
 
             alphabetTrack.visibility = View.VISIBLE
-
-            // Slide track back to its original position
             alphabetTrack.animate()
                 .translationX(0f)
                 .alpha(1f)
@@ -123,7 +113,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 2. FOCUS LISTENER: Trigger the smooth hide animation when tapped
         searchInput.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 hideScrollBar()
@@ -132,7 +121,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. TEXT WATCHER: Integrated with animations
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -145,13 +133,13 @@ class MainActivity : AppCompatActivity() {
                         showScrollBar()
                     }
                     refreshAppListUI()
-
                     recyclerView.scrollToPosition(0)
-
                 } else {
                     hideScrollBar()
 
+                    // OPTIMIZATION: Applied sequence execution to prevent memory allocations per keypress
                     val smartFilteredApps = currentAppList
+                        .asSequence()
                         .filter { it.name.lowercase().contains(query) }
                         .sortedByDescending { app ->
                             val appName = app.name.lowercase()
@@ -162,6 +150,7 @@ class MainActivity : AppCompatActivity() {
                                 else -> 40 - appName.indexOf(query)
                             }
                         }
+                        .toList()
                     appAdapter.updateItems(smartFilteredApps)
                 }
             }
@@ -181,14 +170,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // --- INTEGRATED: Alphabet Fast Scroll Layout Engine ---
         alphabetTrack.onLetterTouchListener = { letter, action, touchY ->
             when (action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     fastScrollBubble.text = letter.toString()
                     fastScrollBubble.visibility = View.VISIBLE
-
-                    // Reset animations just in case they were fading out
                     fastScrollBubble.alpha = 1f
                     fastScrollBubble.scaleX = 1f
                     fastScrollBubble.scaleY = 1f
@@ -205,7 +191,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    // NEW: Smoothly shrink and fade the bubble when you let go of the track!
                     fastScrollBubble.animate()
                         .alpha(0f)
                         .scaleX(0.5f)
@@ -218,21 +203,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // The Engine that dynamically builds your two groups
     private fun refreshAppListUI() {
-        val blocked = currentAppList.filter { blockedApps.contains(it.packageName) }.sortedBy { it.name.lowercase() }
-        val unblocked = currentAppList.filter { !blockedApps.contains(it.packageName) }.sortedBy { it.name.lowercase() }
+        // OPTIMIZATION: Partition extracts both blocked and unblocked lists in exactly 1 loop pass instead of 2
+        val (blocked, unblocked) = currentAppList.partition { blockedApps.contains(it.packageName) }
 
-        val displayList = mutableListOf<Any>()
+        val sortedBlocked = blocked.sortedBy { it.name.lowercase() }
+        val sortedUnblocked = unblocked.sortedBy { it.name.lowercase() }
 
-        if (blocked.isNotEmpty()) {
+        val displayList = ArrayList<Any>(sortedBlocked.size + sortedUnblocked.size + 2)
+
+        if (sortedBlocked.isNotEmpty()) {
             displayList.add("Blocked Apps")
-            displayList.addAll(blocked)
+            displayList.addAll(sortedBlocked)
         }
 
-        if (unblocked.isNotEmpty()) {
+        if (sortedUnblocked.isNotEmpty()) {
             displayList.add("All Apps")
-            displayList.addAll(unblocked)
+            displayList.addAll(sortedUnblocked)
         }
 
         appAdapter.updateItems(displayList)
@@ -277,10 +264,9 @@ class MainActivity : AppCompatActivity() {
 
         if (blockedApps.isNotEmpty() && timeAway > 3000L) {
             isCurrentlyUnlocked = false
-            val lockIntent = Intent(this, LockActivity::class.java).apply {
+            startActivity(Intent(this, LockActivity::class.java).apply {
                 putExtra("IS_APP_SETUP_BARRIER", true)
-            }
-            startActivity(lockIntent)
+            })
             return
         }
 
@@ -311,8 +297,7 @@ class MainActivity : AppCompatActivity() {
                     startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
                     Toast.makeText(this, "Please grant Usage Access to Phocus", Toast.LENGTH_LONG).show()
                 } else {
-                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri())
-                    startActivity(intent)
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri()))
                     Toast.makeText(this, "Please allow Phocus to Display Over Other Apps", Toast.LENGTH_LONG).show()
                 }
             }
@@ -321,7 +306,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
-        @Suppress("DEPRECATION")
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         } else {
@@ -352,18 +336,16 @@ class MainActivity : AppCompatActivity() {
         try {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                intent.data = "package:$packageName".toUri()
-                startActivity(intent)
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = "package:$packageName".toUri()
+                })
             }
         } catch (_: Exception) {
-            val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-            startActivity(fallbackIntent)
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             Toast.makeText(this, getString(R.string.toast_unrestricted_battery), Toast.LENGTH_LONG).show()
         }
     }
 
-    // --- RECYCLERVIEW ADAPTER ---
     inner class AppAdapter(private var items: List<Any>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         private val TYPE_HEADER = 0
@@ -378,12 +360,12 @@ class MainActivity : AppCompatActivity() {
 
         override fun getItemCount(): Int = items.size
 
-        // Safe alphabetical indexing system
         fun getPositionForLetter(letter: Char): Int {
+            val upperLetter = letter.uppercaseChar()
             return items.indexOfFirst { item ->
                 if (item is AppInfo) {
                     val firstChar = item.name.firstOrNull()?.uppercaseChar() ?: 'A'
-                    firstChar >= letter.uppercaseChar()
+                    firstChar >= upperLetter
                 } else {
                     false
                 }
@@ -403,9 +385,8 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
-                override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                    return items[oldItemPosition] == newItems[newItemPosition]
-                }
+                override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                    items[oldItemPosition] == newItems[newItemPosition]
             }
 
             val diffResult = DiffUtil.calculateDiff(diffCallback)
@@ -423,6 +404,9 @@ class MainActivity : AppCompatActivity() {
             val checkBox: CheckBox = view.findViewById(R.id.appCheckBox)
             val timeSpinner: Spinner = view.findViewById(R.id.timeSpinner)
 
+            // Flag prevents programmatic check alterations from triggering infinite layout updates
+            var isBinding = false
+
             val spinnerAdapter = object : ArrayAdapter<String>(
                 view.context,
                 android.R.layout.simple_spinner_item,
@@ -430,9 +414,6 @@ class MainActivity : AppCompatActivity() {
             ) {
                 override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val dropView = super.getDropDownView(position, convertView, parent) as TextView
-
-
-                    // --- THE FIX: Forces the text to the absolute center of the menu! ---
                     dropView.gravity = android.view.Gravity.CENTER
 
                     if (position == timeSpinner.selectedItemPosition) {
@@ -440,20 +421,15 @@ class MainActivity : AppCompatActivity() {
                         val horizontalInset = (2 * density).toInt()
                         val verticalInset = (4 * density).toInt()
 
-                        val roundedBg = android.graphics.drawable.GradientDrawable()
-                        roundedBg.shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                        roundedBg.cornerRadius = 24f
-                        roundedBg.setColor("#446200EE".toColorInt())
+                        val roundedBg = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                            cornerRadius = 24f
+                            setColor("#446200EE".toColorInt())
+                        }
 
-                        val insetBg = android.graphics.drawable.InsetDrawable(
-                            roundedBg,
-                            horizontalInset,
-                            verticalInset,
-                            horizontalInset,
-                            verticalInset
+                        dropView.background = android.graphics.drawable.InsetDrawable(
+                            roundedBg, horizontalInset, verticalInset, horizontalInset, verticalInset
                         )
-
-                        dropView.background = insetBg
                         dropView.setTypeface(null, Typeface.BOLD)
                     } else {
                         dropView.setBackgroundColor(Color.TRANSPARENT)
@@ -466,16 +442,60 @@ class MainActivity : AppCompatActivity() {
             init {
                 spinnerAdapter.setDropDownViewResource(R.layout.item_spinner_centered)
                 timeSpinner.adapter = spinnerAdapter
+
+                // OPTIMIZATION: Listeners set once here instead of over and over inside onBindViewHolder
+                checkBox.setOnCheckedChangeListener { _, isChecked ->
+                    if (isBinding) return@setOnCheckedChangeListener
+
+                    val pos = bindingAdapterPosition
+                    if (pos != RecyclerView.NO_POSITION) {
+                        val app = items[pos] as? AppInfo ?: return@setOnCheckedChangeListener
+
+                        timeSpinner.isEnabled = isChecked
+                        timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
+
+                        if (isChecked) {
+                            blockedApps.add(app.packageName)
+                            if (blockedApps.size == 1) {
+                                Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
+                                requestBatteryUnrestricted()
+                            }
+                        } else {
+                            blockedApps.remove(app.packageName)
+                            if (blockedApps.isEmpty()) {
+                                Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
+                        prefs.edit {
+                            putStringSet("blocked_packages", blockedApps)
+                            putBoolean("isSetupComplete", blockedApps.isNotEmpty())
+                        }
+
+                        itemView.post { refreshAppListUI() }
+                    }
+                }
+
+                timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                        if (isBinding) return
+
+                        val adapterPos = bindingAdapterPosition
+                        if (adapterPos != RecyclerView.NO_POSITION) {
+                            val app = items[adapterPos] as? AppInfo ?: return
+                            prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
+                        }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
+                }
             }
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             return if (viewType == TYPE_HEADER) {
-                val view = LayoutInflater.from(parent.context).inflate(R.layout.item_header, parent, false)
-                HeaderViewHolder(view)
+                HeaderViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_header, parent, false))
             } else {
-                val view = LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false)
-                AppViewHolder(view)
+                AppViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false))
             }
         }
 
@@ -484,59 +504,22 @@ class MainActivity : AppCompatActivity() {
                 holder.headerTitle.text = items[position] as String
             } else if (holder is AppViewHolder) {
                 val app = items[position] as AppInfo
+
+                holder.isBinding = true // Prevent listener feedback triggers
+
                 holder.name.text = app.name
                 holder.icon.setImageDrawable(app.icon)
 
                 val isAppBlocked = blockedApps.contains(app.packageName)
-
-                holder.checkBox.setOnCheckedChangeListener(null)
                 holder.checkBox.isChecked = isAppBlocked
-
-                // Disable & Fade the Spinner initially
                 holder.timeSpinner.isEnabled = isAppBlocked
                 holder.timeSpinner.alpha = if (isAppBlocked) 1.0f else 0.4f
 
-                holder.checkBox.setOnCheckedChangeListener { _, isChecked ->
-
-                    // Instantly lock/unlock it when tapped
-                    holder.timeSpinner.isEnabled = isChecked
-                    holder.timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
-
-                    if (isChecked) {
-                        blockedApps.add(app.packageName)
-                        if (blockedApps.size == 1) {
-                            Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
-                            requestBatteryUnrestricted()
-                        }
-                    } else {
-                        blockedApps.remove(app.packageName)
-                        if (blockedApps.isEmpty()) {
-                            Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
-                        }
-                    }
-
-                    prefs.edit {
-                        putStringSet("blocked_packages", blockedApps)
-                        putBoolean("isSetupComplete", blockedApps.isNotEmpty())
-                    }
-
-                    holder.itemView.post {
-                        refreshAppListUI()
-                    }
-                }
-
                 val savedTime = prefs.getInt("time_${app.packageName}", 5)
                 val spinnerIndex = timeValues.indexOf(savedTime).takeIf { it >= 0 } ?: 0
-
-                holder.timeSpinner.onItemSelectedListener = null
                 holder.timeSpinner.setSelection(spinnerIndex, false)
 
-                holder.timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                        prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
-                    }
-                    override fun onNothingSelected(parent: AdapterView<*>?) {}
-                }
+                holder.isBinding = false // Reset safe interactivity flag
             }
         }
     }

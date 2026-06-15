@@ -13,12 +13,14 @@ import android.os.CountDownTimer
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.TypedValue
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
 import androidx.lifecycle.lifecycleScope
@@ -27,7 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
-@SuppressLint("SetTextI18n") // WARNING FIX: Silences all hardcoded English text warnings
+@SuppressLint("SetTextI18n")
 class LockActivity : AppCompatActivity(), SensorEventListener {
 
     // --- HARDWARE ---
@@ -47,8 +49,11 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var timerText: TextView
     private lateinit var wobbleBubble: View
 
-
+    // --- OPTIMIZATION: CACHED COLORS ---
+    // Pre-calculating these prevents massive CPU spikes during sensor events
     private val colorRed = "#CF6679".toColorInt()
+    private var colorDynamicText = 0
+    private var colorThemeIndigo = 0
 
     // --- TIMERS & LOGIC ---
     private var countDownTimer: CountDownTimer? = null
@@ -62,7 +67,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     private var textResetJob: Job? = null
 
-    // WARNING FIX: Added 'const' to all variables inside the companion object
     companion object {
         private const val PENALTY_COOLDOWN_MS = 1000L
         private const val ACCEL_THRESHOLD_SQ = 0.5f
@@ -70,7 +74,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         private const val SMOOTHING_FACTOR = 0.2f
     }
 
-    // --- NEW: PHYSICS ENGINE VARIABLES ---
     private var smoothedX = 0f
     private var smoothedY = 0f
 
@@ -89,24 +92,34 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         isPenalty = intent.getBooleanExtra("IS_PENALTY", false)
         isAppSetupBarrier = intent.getBooleanExtra("IS_APP_SETUP_BARRIER", false)
 
-        timeLeftMs = when {
-            isPenalty -> 90000L
-            else -> 60000L
-        }
+        timeLeftMs = if (isPenalty) 90000L else 60000L
+
+        // Cache colors exactly once on startup
+        cacheColors()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                startActivity(Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(homeIntent)
+                })
                 finish()
             }
         })
 
         restoreDefaultStatus()
         setupHardware()
+    }
+
+    private fun cacheColors() {
+        val typedValue = TypedValue()
+        theme.resolveAttribute(android.R.attr.textColorPrimary, typedValue, true)
+        colorDynamicText = if (typedValue.resourceId != 0) {
+            ContextCompat.getColor(this, typedValue.resourceId)
+        } else {
+            typedValue.data
+        }
+        colorThemeIndigo = ContextCompat.getColor(this, R.color.phocus_indigo)
     }
 
     private fun setupHardware() {
@@ -125,8 +138,9 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        linearAccel?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        // OPTIMIZATION: SENSOR_DELAY_UI uses a fraction of the battery compared to GAME
+        linearAccel?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
 
         startStillnessTimer(timeLeftMs)
     }
@@ -145,25 +159,21 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 isTimerRunning = false
 
                 if (isAppSetupBarrier) {
-                    // WARNING FIX: Using the modern .edit {} lambda for SharedPreferences
                     prefs.edit { putLong("focuscam_last_active", System.currentTimeMillis()) }
                     Toast.makeText(this@LockActivity, "Phocus Unlocked", Toast.LENGTH_SHORT).show()
                 } else {
-                    // WARNING FIX: Using the modern .edit {} lambda for SharedPreferences
                     prefs.edit { putLong("unlock_time_$targetApp", System.currentTimeMillis()) }
                     val allowedTime = prefs.getInt("time_$targetApp", 5)
                     Toast.makeText(this@LockActivity, "Unlocked for $allowedTime minutes!", Toast.LENGTH_SHORT).show()
 
-                    val launchIntent = packageManager.getLaunchIntentForPackage(targetApp)
-                    if (launchIntent != null) {
+                    packageManager.getLaunchIntentForPackage(targetApp)?.let { launchIntent ->
                         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         startActivity(launchIntent)
                     }
                 }
                 finish()
             }
-        }
-        countDownTimer?.start()
+        }.start()
     }
 
     private fun triggerHapticPenalty() {
@@ -179,12 +189,10 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         }
 
         if (isTimerRunning) {
-            val resetTime = if (isPenalty) 90000L else 60000L
-            startStillnessTimer(resetTime)
+            startStillnessTimer(if (isPenalty) 90000L else 60000L)
             statusText.text = "Moved! Timer Reset"
             statusText.setTextColor(colorRed)
 
-            // --- THE COROUTINE FIX ---
             textResetJob?.cancel()
             textResetJob = lifecycleScope.launch {
                 delay(2000.milliseconds)
@@ -200,20 +208,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             else -> "Hold perfectly still"
         }
 
-        // --- THE INVISIBLE INK FIX ---
-        // Safely unwrap the dynamic system color whether it's a raw hex or a resource reference
-        val typedValue = android.util.TypedValue()
-        theme.resolveAttribute(android.R.attr.textColorPrimary, typedValue, true)
-        val dynamicTextColor = if (typedValue.resourceId != 0) {
-            androidx.core.content.ContextCompat.getColor(this, typedValue.resourceId)
-        } else {
-            typedValue.data
-        }
-
-        val themeIndigo = androidx.core.content.ContextCompat.getColor(this, R.color.phocus_indigo)
-
-        // Apply the colors dynamically!
-        statusText.setTextColor(if (isAppSetupBarrier) themeIndigo else dynamicTextColor)
+        // Pulls instantly from RAM instead of querying the OS
+        statusText.setTextColor(if (isAppSetupBarrier) colorThemeIndigo else colorDynamicText)
         wobbleBubble.alpha = 1.0f
     }
 
@@ -246,11 +242,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 val rawY = event.values[1]
                 val rawZ = event.values[2]
 
-                val targetX = -rawX * 40f
-                val targetY = rawY * 40f
-
-                smoothedX += (targetX - smoothedX) * SMOOTHING_FACTOR
-                smoothedY += (targetY - smoothedY) * SMOOTHING_FACTOR
+                smoothedX += ((-rawX * 40f) - smoothedX) * SMOOTHING_FACTOR
+                smoothedY += ((rawY * 40f) - smoothedY) * SMOOTHING_FACTOR
 
                 wobbleBubble.translationX = smoothedX
                 wobbleBubble.translationY = smoothedY
@@ -259,7 +252,8 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
                 if (magnitudeSq < MIN_TREMOR_SQ) {
                     deadStillFrames++
-                    if (deadStillFrames > 60 && !isOnStand) {
+                    // Adjusted frame count since we lowered the sensor polling rate
+                    if (deadStillFrames > 20 && !isOnStand) {
                         isOnStand = true
                         countDownTimer?.cancel()
                         statusText.text = "Too perfect!\nAre you using a stand?"
@@ -287,7 +281,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         super.onPause()
         sensorManager.unregisterListener(this)
         countDownTimer?.cancel()
-        textResetJob?.cancel() // Good practice to clean up coroutines when the activity pauses
+        textResetJob?.cancel()
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}

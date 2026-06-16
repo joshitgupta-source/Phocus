@@ -16,7 +16,7 @@ class AlphabetTrackView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    private val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    private val alphabet = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -197,7 +197,8 @@ class AlphabetTrackView @JvmOverloads constructor(
 
         if (index != lastAnnouncedIndex) {
             lastAnnouncedIndex = index
-            announceForAccessibility(alphabet[index].toString())
+            accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
+            contentDescription = alphabet[index].toString()
         }
 
 

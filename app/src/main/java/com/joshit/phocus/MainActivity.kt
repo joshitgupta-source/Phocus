@@ -400,14 +400,33 @@ class MainActivity : AppCompatActivity() {
 
         fun getPositionForLetter(letter: Char): Int {
             val upperLetter = letter.uppercaseChar()
-            return items.indexOfFirst { item ->
+
+            // 1. Find exactly where the main dictionary begins (ignores the blocked apps)
+            val startIndex = items.indexOf("All Apps").coerceAtLeast(0)
+
+            // 2. Ensure we actually have apps under the header to look at
+            val firstAppIndex = if (startIndex + 1 < items.size) startIndex + 1 else startIndex
+
+            // 🥬 THE 12 CABBAGE FIX: If they touch the '#', jump straight to the very first app!
+            // Because your list is sorted alphabetically, numbers naturally sit at the very top.
+            if (upperLetter == '#') {
+                return firstAppIndex
+            }
+
+            // 3. Start searching ONLY from that safe index downward
+            for (i in firstAppIndex until items.size) {
+                val item = items[i]
+
                 if (item is AppItemWrapper) {
                     val firstChar = item.app.name.firstOrNull()?.uppercaseChar() ?: 'A'
-                    firstChar >= upperLetter
-                } else {
-                    false
+
+                    // If the app starts with a number, this skips it while looking for A-Z
+                    if (firstChar >= upperLetter) {
+                        return i
+                    }
                 }
             }
+            return -1
         }
 
         fun updateItems(newItems: List<Any>) {

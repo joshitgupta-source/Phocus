@@ -17,68 +17,39 @@ import kotlin.time.Duration.Companion.milliseconds
 
 class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
+    private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var isTracking = false
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
 
-    private lateinit var prefs: SharedPreferences
     private lateinit var powerManager: PowerManager
     private lateinit var usageStatsManager: UsageStatsManager
 
-    // --- CACHED MEMORY ENGINE ---
-    private var lastQueryTime = 0L
-    private var blockedAppsCache = setOf<String>()
-
-    // OPTIMIZATION: Stores pre-calculated expiration rules in RAM to prevent heavy disk I/O every 500ms
+    // Settings Caches
+    private val blockedAppsCache = mutableSetOf<String>()
     private val timeLimitCache = mutableMapOf<String, AppRule>()
 
-    private data class AppRule(val expirationTime: Long, val penaltyEndTime: Long, val isLocked: Boolean)
+    // --- THE FIX: State-Driven Memory Engine ---
+    private var currentForegroundApp: String? = null
+    private var lastEventTime = 0L
+    private val lastBlockTimeMap = mutableMapOf<String, Long>() // Prevents spamming the lock screen
+
+    private data class AppRule(val expirationTime: Long, val penaltyEndTime: Long)
 
     override fun onCreate() {
         super.onCreate()
-        prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         powerManager = getSystemService(POWER_SERVICE) as PowerManager
         usageStatsManager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
 
+        val prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(this)
 
-        // Initialize cache
-        updateBlockCache()
-
-        lastQueryTime = System.currentTimeMillis() - 60_000L // Only look back 1 minute to start
+        loadCacheFromPrefs(prefs)
         startForeground(1, createNotification())
     }
 
-    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
-        if (key == "blocked_packages" || key?.startsWith("unlock_time_") == true || key?.startsWith("time_") == true) {
-            updateBlockCache()
-
-            // --- THE FIX: The Self-Destruct Sequence ---
-            if (blockedAppsCache.isEmpty()) {
-                stopSelf() // Kills the service instantly from the inside!
-            }
-        }
-    }
-
-    private fun updateBlockCache() {
-        blockedAppsCache = prefs.getStringSet("blocked_packages", emptySet())?.toSet() ?: emptySet()
-        timeLimitCache.clear()
-
-        val now = System.currentTimeMillis()
-
-        for (app in blockedAppsCache) {
-            val lastUnlockTime = prefs.getLong("unlock_time_$app", 0L)
-            val allowedTimeMs = prefs.getInt("time_$app", 5) * 60_000L
-            val expirationTime = lastUnlockTime + allowedTimeMs
-
-            timeLimitCache[app] = AppRule(
-                expirationTime = expirationTime,
-                penaltyEndTime = expirationTime + 600_000L,
-                isLocked = now > expirationTime
-            )
-        }
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
+        loadCacheFromPrefs(prefs)
+
         if (!isTracking) {
             isTracking = true
             startTrackingLoop()
@@ -86,53 +57,119 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         return START_STICKY
     }
 
+    private fun loadCacheFromPrefs(prefs: SharedPreferences) {
+        val blocked = prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet()
+        blockedAppsCache.clear()
+        blockedAppsCache.addAll(blocked)
+        timeLimitCache.clear()
+
+        for (app in blockedAppsCache) {
+            val lastUnlockTime = prefs.getLong("unlock_time_$app", 0L)
+            val allowedTimeMs = prefs.getInt("time_$app", 5) * 60_000L
+
+            val expirationTime = if (lastUnlockTime == 0L) 0L else (lastUnlockTime + allowedTimeMs)
+            val penaltyEndTime = expirationTime + 600_000L
+
+            timeLimitCache[app] = AppRule(
+                expirationTime = expirationTime,
+                penaltyEndTime = penaltyEndTime
+            )
+        }
+
+        if (blockedAppsCache.isEmpty() && isTracking) {
+            stopSelf()
+        }
+    }
+
+    override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
+        if (key == "blocked_packages" || key?.startsWith("unlock_time_") == true || key?.startsWith("time_") == true) {
+            prefs?.let { loadCacheFromPrefs(it) }
+        }
+    }
+
+    // THE FIX: Looks back 1 hour to find out what app is currently open before the engine starts
+    private fun initializeForegroundState() {
+        val endTime = System.currentTimeMillis()
+        val startTime = endTime - (1000 * 60 * 60)
+
+        val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
+        val event = UsageEvents.Event()
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                if (event.timeStamp > lastEventTime) {
+                    currentForegroundApp = event.packageName
+                    lastEventTime = event.timeStamp
+                }
+            } else if (event.eventType == UsageEvents.Event.ACTIVITY_PAUSED || event.eventType == UsageEvents.Event.ACTIVITY_STOPPED) {
+                if (event.timeStamp > lastEventTime && currentForegroundApp == event.packageName) {
+                    currentForegroundApp = null
+                    lastEventTime = event.timeStamp
+                }
+            }
+        }
+    }
+
     private fun startTrackingLoop() {
+        initializeForegroundState() // Calibrate memory on boot
+
         scope.launch {
             while (isActive && isTracking) {
                 if (powerManager.isInteractive && blockedAppsCache.isNotEmpty()) {
                     checkUsageEvents()
                     delay(500.milliseconds)
                 } else {
-                    // Deep sleep when screen is off or no rules apply
                     delay(5000.milliseconds)
                 }
             }
         }
     }
 
-    // OPTIMIZATION: Checks events and triggers locks in a single, lean pass
     private fun checkUsageEvents() {
         val endTime = System.currentTimeMillis()
-        val usageEvents = usageStatsManager.queryEvents(lastQueryTime, endTime)
+        val startTime = endTime - 10000L // 10-second rolling sweep for safety
+
+        val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
         val event = UsageEvents.Event()
 
-        var targetToBlock: String? = null
-        var isPenalty = false
-
+        // 1. UPDATE THE MEMORY STATE
         while (usageEvents.hasNextEvent()) {
             usageEvents.getNextEvent(event)
-            val pkg = event.packageName
 
-            // Ignore system UI and our own app instantly
-            if (pkg == packageName || pkg == "com.android.systemui") continue
-
-            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED || event.eventType == UsageEvents.Event.ACTIVITY_PAUSED) {
-                if (pkg in blockedAppsCache) {
-                    val rule = timeLimitCache[pkg]
-
-                    if (rule != null && rule.isLocked) {
-                        targetToBlock = pkg
-                        isPenalty = endTime <= rule.penaltyEndTime
-                        break // Stop reading events immediately once a violation is found
-                    }
+            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                if (event.timeStamp > lastEventTime) {
+                    currentForegroundApp = event.packageName
+                    lastEventTime = event.timeStamp
+                }
+            } else if (event.eventType == UsageEvents.Event.ACTIVITY_PAUSED || event.eventType == UsageEvents.Event.ACTIVITY_STOPPED) {
+                if (event.timeStamp > lastEventTime && currentForegroundApp == event.packageName) {
+                    currentForegroundApp = null
+                    lastEventTime = event.timeStamp
                 }
             }
         }
 
-        lastQueryTime = endTime
+        // 2. ENFORCE RULES BASED ON MEMORY (Not just events)
+        val fgApp = currentForegroundApp
 
-        targetToBlock?.let {
-            showBlockScreen(it, isPenalty)
+        // If the app currently on screen is in our block list...
+        if (fgApp != null && fgApp in blockedAppsCache && fgApp != packageName && fgApp != "com.android.systemui") {
+            val rule = timeLimitCache[fgApp]
+
+            // Check the clock: Is the granted time expired?
+            if (rule != null && endTime >= rule.expirationTime) {
+
+                val lastBlockTime = lastBlockTimeMap[fgApp] ?: 0L
+
+                // 4-second cooldown to prevent spamming the lock screen
+                if (endTime - lastBlockTime > 4000L) {
+                    lastBlockTimeMap[fgApp] = endTime
+
+                    val isPenalty = endTime <= rule.penaltyEndTime
+                    showBlockScreen(fgApp, isPenalty)
+                }
+            }
         }
     }
 
@@ -172,6 +209,7 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
     override fun onDestroy() {
         super.onDestroy()
         isTracking = false
+        val prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         scope.cancel()
     }

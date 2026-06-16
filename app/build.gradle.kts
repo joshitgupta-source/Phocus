@@ -9,6 +9,10 @@ android {
     namespace = "com.joshit.phocus"
     compileSdk = 37
 
+    buildFeatures {
+        viewBinding = true
+    }
+
     defaultConfig {
         applicationId = "com.joshit.phocus"
         minSdk = 24

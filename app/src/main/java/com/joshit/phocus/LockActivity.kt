@@ -14,6 +14,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
@@ -50,7 +51,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var wobbleBubble: View
 
     // --- OPTIMIZATION: CACHED COLORS ---
-    // Pre-calculating these prevents massive CPU spikes during sensor events
     private val colorRed = "#CF6679".toColorInt()
     private var colorDynamicText = 0
     private var colorThemeIndigo = 0
@@ -65,10 +65,13 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private var timeLeftMs = 60000L
     private var lastPenaltyTime = 0L
 
+    private var lastStandRecoveryTime = 0L
+
     private var textResetJob: Job? = null
 
     companion object {
         private const val PENALTY_COOLDOWN_MS = 1000L
+        private const val STAND_GRACE_PERIOD_MS = 1500L // 1.5 seconds of safety after picking up
         private const val ACCEL_THRESHOLD_SQ = 0.5f
         private const val MIN_TREMOR_SQ = 0.005f
         private const val SMOOTHING_FACTOR = 0.2f
@@ -77,11 +80,20 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     private var smoothedX = 0f
     private var smoothedY = 0f
 
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            wobbleBubble.translationX = smoothedX
+            wobbleBubble.translationY = smoothedY
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_lock)
         supportActionBar?.hide()
+
+        updateWakeLock(keepOn = true)
 
         prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         statusText = findViewById(R.id.statusText)
@@ -94,7 +106,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
         timeLeftMs = if (isPenalty) 90000L else 60000L
 
-        // Cache colors exactly once on startup
         cacheColors()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -109,6 +120,14 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
         restoreDefaultStatus()
         setupHardware()
+    }
+
+    private fun updateWakeLock(keepOn: Boolean) {
+        if (keepOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun cacheColors() {
@@ -138,9 +157,10 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        // OPTIMIZATION: SENSOR_DELAY_UI uses a fraction of the battery compared to GAME
         linearAccel?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+
+        Choreographer.getInstance().postFrameCallback(frameCallback)
 
         startStillnessTimer(timeLeftMs)
     }
@@ -161,17 +181,24 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 if (isAppSetupBarrier) {
                     prefs.edit { putLong("focuscam_last_active", System.currentTimeMillis()) }
                     Toast.makeText(this@LockActivity, "Phocus Unlocked", Toast.LENGTH_SHORT).show()
+                    finish()
                 } else {
                     prefs.edit { putLong("unlock_time_$targetApp", System.currentTimeMillis()) }
                     val allowedTime = prefs.getInt("time_$targetApp", 5)
                     Toast.makeText(this@LockActivity, "Unlocked for $allowedTime minutes!", Toast.LENGTH_SHORT).show()
 
-                    packageManager.getLaunchIntentForPackage(targetApp)?.let { launchIntent ->
+                    val launchIntent = packageManager.getLaunchIntentForPackage(targetApp)
+                    if (launchIntent != null) {
                         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         startActivity(launchIntent)
+                    } else {
+                        Toast.makeText(this@LockActivity, "App not found! Returning Home.", Toast.LENGTH_SHORT).show()
+                        val fallbackIntent = Intent(this@LockActivity, MainActivity::class.java)
+                        fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        startActivity(fallbackIntent)
                     }
+                    finish()
                 }
-                finish()
             }
         }.start()
     }
@@ -207,8 +234,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             isPenalty -> "Penalty Phase!\nHold for 90 seconds."
             else -> "Hold perfectly still"
         }
-
-        // Pulls instantly from RAM instead of querying the OS
         statusText.setTextColor(if (isAppSetupBarrier) colorThemeIndigo else colorDynamicText)
         wobbleBubble.alpha = 1.0f
     }
@@ -219,10 +244,13 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         when (event.sensor.type) {
             Sensor.TYPE_GRAVITY -> {
                 val zGravity = event.values[2]
-                if (zGravity > 8.5f || zGravity < -8.5f) {
+
+                if (zGravity > 8.5f) {
                     if (!isPhoneFlat) {
                         isPhoneFlat = true
                         countDownTimer?.cancel()
+                        updateWakeLock(keepOn = false)
+
                         statusText.text = "Pick it up!\nNo resting on tables."
                         statusText.setTextColor(colorRed)
                         timerText.text = "Paused"
@@ -230,6 +258,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                     }
                 } else if (isPhoneFlat) {
                     isPhoneFlat = false
+                    updateWakeLock(keepOn = true)
                     restoreDefaultStatus()
                     startStillnessTimer(timeLeftMs)
                 }
@@ -242,20 +271,19 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 val rawY = event.values[1]
                 val rawZ = event.values[2]
 
+                // Math decoupled from UI. Render loop handles the visuals.
                 smoothedX += ((-rawX * 40f) - smoothedX) * SMOOTHING_FACTOR
                 smoothedY += ((rawY * 40f) - smoothedY) * SMOOTHING_FACTOR
-
-                wobbleBubble.translationX = smoothedX
-                wobbleBubble.translationY = smoothedY
 
                 val magnitudeSq = (rawX * rawX) + (rawY * rawY) + (rawZ * rawZ)
 
                 if (magnitudeSq < MIN_TREMOR_SQ) {
                     deadStillFrames++
-                    // Adjusted frame count since we lowered the sensor polling rate
                     if (deadStillFrames > 20 && !isOnStand) {
                         isOnStand = true
                         countDownTimer?.cancel()
+                        updateWakeLock(keepOn = false)
+
                         statusText.text = "Too perfect!\nAre you using a stand?"
                         statusText.setTextColor(colorRed)
                         timerText.text = "Paused"
@@ -265,12 +293,15 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                     deadStillFrames = 0
                     if (isOnStand) {
                         isOnStand = false
+                        lastStandRecoveryTime = System.currentTimeMillis()
+                        updateWakeLock(keepOn = true)
                         restoreDefaultStatus()
                         startStillnessTimer(timeLeftMs)
                     }
                 }
 
-                if (!isOnStand && magnitudeSq > ACCEL_THRESHOLD_SQ) {
+                val now = System.currentTimeMillis()
+                if (!isOnStand && magnitudeSq > ACCEL_THRESHOLD_SQ && (now - lastStandRecoveryTime > STAND_GRACE_PERIOD_MS)) {
                     triggerHapticPenalty()
                 }
             }
@@ -280,6 +311,9 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+
         countDownTimer?.cancel()
         textResetJob?.cancel()
     }

@@ -28,22 +28,36 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
+import androidx.core.net.toUri
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isGone
+import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import kotlinx.coroutines.launch
-import androidx.core.net.toUri
-import androidx.core.view.isGone
-import androidx.core.view.isVisible
+import kotlinx.coroutines.*
 
-@SuppressLint("SetTextI18n")
+// IMPORTANT: Ensure ViewBinding is enabled in build.gradle
+import com.joshit.phocus.databinding.ActivityMainBinding
+import com.joshit.phocus.databinding.ItemAppBinding
+import com.joshit.phocus.databinding.ItemHeaderBinding
+import kotlin.time.Duration.Companion.milliseconds
+
+// OPTIMIZATION 1: The UI Wrapper prevents reading the database during rapid scrolling
+data class AppItemWrapper(
+    val app: AppInfo,
+    val isBlocked: Boolean,
+    val savedTime: Int
+)
+
+@SuppressLint("SetTextI18n", "SpellCheckingInspection")
 class MainActivity : AppCompatActivity() {
 
     private val viewModel: AppViewModel by viewModels()
+    private lateinit var binding: ActivityMainBinding // OPTIMIZATION 2: View Binding
 
     private lateinit var prefs: SharedPreferences
     private val blockedApps = mutableSetOf<String>()
@@ -51,10 +65,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appAdapter: AppAdapter
 
     private var currentAppList = listOf<AppInfo>()
+    private var searchJob: Job? = null // For background search debouncing
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+
+        // Initialize View Binding
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
         supportActionBar?.hide()
 
         setupTheme()
@@ -62,68 +80,28 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("FocusCamPrefs", MODE_PRIVATE)
         blockedApps.addAll(prefs.getStringSet("blocked_packages", emptySet()) ?: emptySet())
 
-        val recyclerView = findViewById<RecyclerView>(R.id.appRecyclerView)
-        recyclerView.layoutManager = LinearLayoutManager(this)
-
+        binding.appRecyclerView.layoutManager = LinearLayoutManager(this)
         appAdapter = AppAdapter(emptyList())
-        recyclerView.adapter = appAdapter
-
-        val searchInput = findViewById<EditText>(R.id.searchInput)
-        val alphabetTrack = findViewById<AlphabetTrackView>(R.id.alphabetTrack)
-        val fastScrollBubble = findViewById<TextView>(R.id.fastScrollBubble)
-
-        fun hideScrollBar() {
-            if (alphabetTrack.isGone && alphabetTrack.alpha == 0f) return
-
-            alphabetTrack.animate()
-                .translationX(alphabetTrack.width.toFloat() + 50f)
-                .alpha(0f)
-                .setDuration(250)
-                .withEndAction { alphabetTrack.visibility = View.GONE }
-                .start()
-
-            fastScrollBubble.animate()
-                .alpha(0f)
-                .scaleX(0.5f)
-                .scaleY(0.5f)
-                .setDuration(200)
-                .withEndAction { fastScrollBubble.visibility = View.GONE }
-                .start()
-        }
-
-        fun showScrollBar() {
-            if (alphabetTrack.isVisible && alphabetTrack.translationX == 0f) return
-
-            alphabetTrack.visibility = View.VISIBLE
-            alphabetTrack.animate()
-                .translationX(0f)
-                .alpha(1f)
-                .setDuration(250)
-                .withEndAction(null)
-                .start()
-        }
+        binding.appRecyclerView.adapter = appAdapter
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.appsToDisplay.collect { apps ->
                     currentAppList = apps.filter { it.packageName != packageName }
-                    refreshAppListUI()
-                    if (searchInput.text.isEmpty()) {
-                        recyclerView.scrollToPosition(0)
-                    }
+                    processListAndRefreshUI()
                 }
             }
         }
 
-        searchInput.setOnFocusChangeListener { _, hasFocus ->
+        binding.searchInput.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 hideScrollBar()
-            } else if (searchInput.text.isEmpty()) {
+            } else if (binding.searchInput.text.isEmpty()) {
                 showScrollBar()
             }
         }
 
-        searchInput.addTextChangedListener(object : TextWatcher {
+        binding.searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
 
@@ -131,34 +109,23 @@ class MainActivity : AppCompatActivity() {
                 val query = s.toString().trim().lowercase()
 
                 if (query.isEmpty()) {
-                    if (!searchInput.hasFocus()) {
+                    if (!binding.searchInput.hasFocus()) {
                         showScrollBar()
                     }
-                    refreshAppListUI()
-                    recyclerView.scrollToPosition(0)
                 } else {
                     hideScrollBar()
+                }
 
-                    // OPTIMIZATION: Applied sequence execution to prevent memory allocations per keypress
-                    val smartFilteredApps = currentAppList
-                        .asSequence()
-                        .filter { it.name.lowercase().contains(query) }
-                        .sortedByDescending { app ->
-                            val appName = app.name.lowercase()
-                            when {
-                                appName == query -> 100
-                                appName.startsWith(query) -> 80
-                                appName.split(" ").any { it.startsWith(query) } -> 60
-                                else -> 40 - appName.indexOf(query)
-                            }
-                        }
-                        .toList()
-                    appAdapter.updateItems(smartFilteredApps)
+                // OPTIMIZATION 3: Search Debouncing. Waits 150ms before searching to keep keyboard snappy!
+                searchJob?.cancel()
+                searchJob = lifecycleScope.launch {
+                    delay(150.milliseconds)
+                    processListAndRefreshUI(query)
                 }
             }
         })
 
-        searchInput.setOnEditorActionListener { v, actionId, event ->
+        binding.searchInput.setOnEditorActionListener { v, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH ||
                 actionId == EditorInfo.IME_ACTION_DONE ||
                 (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
@@ -172,59 +139,127 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        alphabetTrack.onLetterTouchListener = { letter, action, touchY ->
+        binding.alphabetTrack.onLetterTouchListener = { letter, action, touchY ->
             when (action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                    fastScrollBubble.text = letter.toString()
-                    fastScrollBubble.visibility = View.VISIBLE
-                    fastScrollBubble.alpha = 1f
-                    fastScrollBubble.scaleX = 1f
-                    fastScrollBubble.scaleY = 1f
+                    binding.fastScrollBubble.text = letter.toString()
+                    binding.fastScrollBubble.visibility = View.VISIBLE
+                    binding.fastScrollBubble.alpha = 1f
+                    binding.fastScrollBubble.scaleX = 1f
+                    binding.fastScrollBubble.scaleY = 1f
 
-                    fastScrollBubble.post {
-                        val trackTopOffset = alphabetTrack.top
-                        val halfBubbleHeight = fastScrollBubble.height / 2f
-                        fastScrollBubble.y = trackTopOffset + touchY - halfBubbleHeight
+                    binding.fastScrollBubble.post {
+                        val trackTopOffset = binding.alphabetTrack.top
+                        val halfBubbleHeight = binding.fastScrollBubble.height / 2f
+                        binding.fastScrollBubble.y = trackTopOffset + touchY - halfBubbleHeight
                     }
 
                     val position = appAdapter.getPositionForLetter(letter)
                     if (position != -1) {
-                        (recyclerView.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, 0)
+                        (binding.appRecyclerView.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, 0)
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    fastScrollBubble.animate()
+                    binding.fastScrollBubble.animate()
                         .alpha(0f)
                         .scaleX(0.5f)
                         .scaleY(0.5f)
                         .setDuration(150)
-                        .withEndAction { fastScrollBubble.visibility = View.GONE }
+                        .withEndAction { binding.fastScrollBubble.visibility = View.GONE }
                         .start()
                 }
             }
         }
     }
 
-    private fun refreshAppListUI() {
-        // OPTIMIZATION: Partition extracts both blocked and unblocked lists in exactly 1 loop pass instead of 2
-        val (blocked, unblocked) = currentAppList.partition { blockedApps.contains(it.packageName) }
+    // --- THE MEGA ENGINE: Offloads List Sorting & Database Lookups to a Background Thread ---
+    private fun processListAndRefreshUI(query: String = binding.searchInput.text.toString().trim().lowercase()) {
+        lifecycleScope.launch(Dispatchers.Default) {
 
-        val sortedBlocked = blocked.sortedBy { it.name.lowercase() }
-        val sortedUnblocked = unblocked.sortedBy { it.name.lowercase() }
+            val listToProcess = if (query.isEmpty()) {
+                currentAppList
+            } else {
+                currentAppList.asSequence()
+                    .filter { it.name.lowercase().contains(query) }
+                    // THE FIX 1: Use sortedWith so we can rank by match quality, AND THEN alphabetically
+                    .sortedWith(
+                        compareByDescending<AppInfo> { app ->
+                            val appName = app.name.lowercase()
+                            when {
+                                appName == query -> 100
+                                appName.startsWith(query) -> 80
+                                appName.split(" ").any { it.startsWith(query) } -> 60
+                                else -> 40 - appName.indexOf(query)
+                            }
+                        }.thenBy { it.name.lowercase() }
+                    )
+                    .toList()
+            }
 
-        val displayList = ArrayList<Any>(sortedBlocked.size + sortedUnblocked.size + 2)
+            val (blocked, unblocked) = listToProcess.partition { blockedApps.contains(it.packageName) }
 
-        if (sortedBlocked.isNotEmpty()) {
-            displayList.add("Blocked Apps")
-            displayList.addAll(sortedBlocked)
+            // THE FIX 2: Only force a pure alphabetical sort if the user IS NOT searching!
+            // If they are searching, listToProcess is already in the perfect order.
+            val sortedBlocked = if (query.isEmpty()) blocked.sortedBy { it.name.lowercase() } else blocked
+            val sortedUnblocked = if (query.isEmpty()) unblocked.sortedBy { it.name.lowercase() } else unblocked
+
+            val displayList = ArrayList<Any>(sortedBlocked.size + sortedUnblocked.size + 2)
+
+            if (sortedBlocked.isNotEmpty()) {
+                displayList.add("Blocked Apps")
+                sortedBlocked.forEach { app ->
+                    val savedTime = prefs.getInt("time_${app.packageName}", 5)
+                    displayList.add(AppItemWrapper(app, true, savedTime))
+                }
+            }
+
+            if (sortedUnblocked.isNotEmpty()) {
+                displayList.add("All Apps")
+                sortedUnblocked.forEach { app ->
+                    val savedTime = prefs.getInt("time_${app.packageName}", 5)
+                    displayList.add(AppItemWrapper(app, false, savedTime))
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                appAdapter.updateItems(displayList)
+
+                if (query.isEmpty() && !binding.searchInput.hasFocus()) {
+                    binding.appRecyclerView.scrollToPosition(0)
+                }
+            }
         }
+    }
 
-        if (sortedUnblocked.isNotEmpty()) {
-            displayList.add("All Apps")
-            displayList.addAll(sortedUnblocked)
-        }
+    private fun hideScrollBar() {
+        if (binding.alphabetTrack.isGone && binding.alphabetTrack.alpha == 0f) return
 
-        appAdapter.updateItems(displayList)
+        binding.alphabetTrack.animate()
+            .translationX(binding.alphabetTrack.width.toFloat() + 50f)
+            .alpha(0f)
+            .setDuration(250)
+            .withEndAction { binding.alphabetTrack.visibility = View.GONE }
+            .start()
+
+        binding.fastScrollBubble.animate()
+            .alpha(0f)
+            .scaleX(0.5f)
+            .scaleY(0.5f)
+            .setDuration(200)
+            .withEndAction { binding.fastScrollBubble.visibility = View.GONE }
+            .start()
+    }
+
+    private fun showScrollBar() {
+        if (binding.alphabetTrack.isVisible && binding.alphabetTrack.translationX == 0f) return
+
+        binding.alphabetTrack.visibility = View.VISIBLE
+        binding.alphabetTrack.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(250)
+            .withEndAction(null)
+            .start()
     }
 
     @Suppress("DEPRECATION")
@@ -239,7 +274,7 @@ class MainActivity : AppCompatActivity() {
         window.statusBarColor = if (isLightMode) Color.WHITE else "#121212".toColorInt()
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = isLightMode
 
-        findViewById<Button>(R.id.themeToggleBtn).setOnClickListener {
+        binding.themeToggleBtn.setOnClickListener {
             val newMode = !themePrefs.getBoolean("isLightMode", false)
             themePrefs.edit { putBoolean("isLightMode", newMode) }
 
@@ -277,30 +312,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndStartService() {
-        val mainContent = findViewById<View>(R.id.mainContent)
-        val permissionOverlay = findViewById<View>(R.id.permissionOverlay)
-        val grantPermissionBtn = findViewById<Button>(R.id.grantPermissionBtn)
-
         val hasUsageStats = hasUsageStatsPermission()
         val hasOverlay = Settings.canDrawOverlays(this)
 
         if (hasUsageStats && hasOverlay) {
-            permissionOverlay.visibility = View.GONE
-            mainContent.visibility = View.VISIBLE
+            binding.permissionOverlay.visibility = View.GONE
+            binding.mainContent.visibility = View.VISIBLE
 
-            // THE FIX: Only launch the background engine if we actually have work to do!
             val serviceIntent = Intent(this, PhocusTrackingService::class.java)
             if (blockedApps.isNotEmpty()) {
                 ContextCompat.startForegroundService(this, serviceIntent)
             } else {
-                stopService(serviceIntent) // Ensure it is completely dead
+                stopService(serviceIntent)
             }
         } else {
-            // ... (Keep your existing permission denied logic here)
-            permissionOverlay.visibility = View.VISIBLE
-            mainContent.visibility = View.GONE
+            binding.permissionOverlay.visibility = View.VISIBLE
+            binding.mainContent.visibility = View.GONE
 
-            grantPermissionBtn.setOnClickListener {
+            binding.grantPermissionBtn.setOnClickListener {
                 if (!hasUsageStats) {
                     startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
                     Toast.makeText(this, "Please grant Usage Access to Phocus", Toast.LENGTH_LONG).show()
@@ -311,13 +340,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
     @Suppress("DEPRECATION")
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         } else {
-            @Suppress("DEPRECATION")
             appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         }
         return mode == AppOpsManager.MODE_ALLOWED
@@ -354,6 +383,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // --- MODERNIZED VIEW HOLDER ADAPTER ---
     inner class AppAdapter(private var items: List<Any>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         private val typeHeader = 0
@@ -371,8 +401,8 @@ class MainActivity : AppCompatActivity() {
         fun getPositionForLetter(letter: Char): Int {
             val upperLetter = letter.uppercaseChar()
             return items.indexOfFirst { item ->
-                if (item is AppInfo) {
-                    val firstChar = item.name.firstOrNull()?.uppercaseChar() ?: 'A'
+                if (item is AppItemWrapper) {
+                    val firstChar = item.app.name.firstOrNull()?.uppercaseChar() ?: 'A'
                     firstChar >= upperLetter
                 } else {
                     false
@@ -389,7 +419,8 @@ class MainActivity : AppCompatActivity() {
                     val old = items[oldItemPosition]
                     val new = newItems[newItemPosition]
                     if (old is String && new is String) return old == new
-                    if (old is AppInfo && new is AppInfo) return old.packageName == new.packageName
+                    // AppItemWrapper makes DiffUtil logic perfectly safe and clean!
+                    if (old is AppItemWrapper && new is AppItemWrapper) return old.app.packageName == new.app.packageName
                     return false
                 }
 
@@ -402,21 +433,14 @@ class MainActivity : AppCompatActivity() {
             diffResult.dispatchUpdatesTo(this)
         }
 
-        inner class HeaderViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-            val headerTitle: TextView = view.findViewById(R.id.headerTitle)
-        }
+        // Leveraging generated Binding classes directly
+        inner class HeaderViewHolder(val itemBinding: ItemHeaderBinding) : RecyclerView.ViewHolder(itemBinding.root)
+        inner class AppViewHolder(val itemBinding: ItemAppBinding) : RecyclerView.ViewHolder(itemBinding.root) {
 
-        inner class AppViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-            val icon: ImageView = view.findViewById(R.id.appIcon)
-            val name: TextView = view.findViewById(R.id.appName)
-            val checkBox: CheckBox = view.findViewById(R.id.appCheckBox)
-            val timeSpinner: Spinner = view.findViewById(R.id.timeSpinner)
-
-            // Flag prevents programmatic check alterations from triggering infinite layout updates
             var isBinding = false
 
             val spinnerAdapter = object : ArrayAdapter<String>(
-                view.context,
+                itemBinding.root.context,
                 android.R.layout.simple_spinner_item,
                 timeOptions
             ) {
@@ -424,8 +448,8 @@ class MainActivity : AppCompatActivity() {
                     val dropView = super.getDropDownView(position, convertView, parent) as TextView
                     dropView.gravity = android.view.Gravity.CENTER
 
-                    if (position == timeSpinner.selectedItemPosition) {
-                        val density = view.context.resources.displayMetrics.density
+                    if (position == itemBinding.timeSpinner.selectedItemPosition) {
+                        val density = itemBinding.root.context.resources.displayMetrics.density
                         val horizontalInset = (2 * density).toInt()
                         val verticalInset = (4 * density).toInt()
 
@@ -449,58 +473,55 @@ class MainActivity : AppCompatActivity() {
 
             init {
                 spinnerAdapter.setDropDownViewResource(R.layout.item_spinner_centered)
-                timeSpinner.adapter = spinnerAdapter
+                itemBinding.timeSpinner.adapter = spinnerAdapter
 
-                // OPTIMIZATION: Listeners set once here instead of over and over inside onBindViewHolder
-                checkBox.setOnCheckedChangeListener { _, isChecked ->
+                itemBinding.appCheckBox.setOnCheckedChangeListener { _, isChecked ->
                     if (isBinding) return@setOnCheckedChangeListener
 
                     val pos = adapterPosition
                     if (pos != RecyclerView.NO_POSITION) {
-                        val app = items[pos] as? AppInfo ?: return@setOnCheckedChangeListener
+                        val wrapper = items[pos] as? AppItemWrapper ?: return@setOnCheckedChangeListener
 
-                        timeSpinner.isEnabled = isChecked
-                        timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
+                        itemBinding.timeSpinner.isEnabled = isChecked
+                        itemBinding.timeSpinner.alpha = if (isChecked) 1.0f else 0.4f
 
                         val serviceIntent = Intent(this@MainActivity, PhocusTrackingService::class.java)
 
                         if (isChecked) {
-                            blockedApps.add(app.packageName)
+                            blockedApps.add(wrapper.app.packageName)
+
+                            ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
+
                             if (blockedApps.size == 1) {
                                 Toast.makeText(this@MainActivity, getString(R.string.toast_guard_active), Toast.LENGTH_SHORT).show()
                                 requestBatteryUnrestricted()
-
-                                // --- THE ENGINE BOOT: 0 to 1 app blocked! ---
-                                ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
                             }
                         } else {
-                            blockedApps.remove(app.packageName)
+                            blockedApps.remove(wrapper.app.packageName)
                             if (blockedApps.isEmpty()) {
                                 Toast.makeText(this@MainActivity, getString(R.string.toast_guard_disabled), Toast.LENGTH_SHORT).show()
-
-                                // --- THE ENGINE KILL: Last app unchecked! ---
                                 stopService(serviceIntent)
                             }
                         }
 
                         prefs.edit {
-                            putStringSet("blocked_packages", blockedApps)
+                            putStringSet("blocked_packages", blockedApps.toSet())
                             putBoolean("isSetupComplete", blockedApps.isNotEmpty())
                         }
 
-                        itemView.post { refreshAppListUI() }
+                        // Seamlessly updates the lists without stutter
+                        processListAndRefreshUI()
                     }
                 }
 
-                timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                itemBinding.timeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                         if (isBinding) return
 
-                        // THE FIX: Changed to adapterPosition for library compatibility
                         val currentAdapterPos = adapterPosition
                         if (currentAdapterPos != RecyclerView.NO_POSITION) {
-                            val app = items[currentAdapterPos] as? AppInfo ?: return
-                            prefs.edit { putInt("time_${app.packageName}", timeValues[pos]) }
+                            val wrapper = items[currentAdapterPos] as? AppItemWrapper ?: return
+                            prefs.edit { putInt("time_${wrapper.app.packageName}", timeValues[pos]) }
                         }
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -509,34 +530,34 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val inflater = LayoutInflater.from(parent.context)
             return if (viewType == typeHeader) {
-                HeaderViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_header, parent, false))
+                HeaderViewHolder(ItemHeaderBinding.inflate(inflater, parent, false))
             } else {
-                AppViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false))
+                AppViewHolder(ItemAppBinding.inflate(inflater, parent, false))
             }
         }
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             if (holder is HeaderViewHolder) {
-                holder.headerTitle.text = items[position] as String
+                holder.itemBinding.headerTitle.text = items[position] as String
             } else if (holder is AppViewHolder) {
-                val app = items[position] as AppInfo
+                val wrapper = items[position] as AppItemWrapper
 
-                holder.isBinding = true // Prevent listener feedback triggers
+                holder.isBinding = true
 
-                holder.name.text = app.name
-                holder.icon.setImageDrawable(app.icon)
+                // Zero database lookups here! It's all loaded from the wrapper natively.
+                holder.itemBinding.appName.text = wrapper.app.name
+                holder.itemBinding.appIcon.setImageDrawable(wrapper.app.icon)
 
-                val isAppBlocked = blockedApps.contains(app.packageName)
-                holder.checkBox.isChecked = isAppBlocked
-                holder.timeSpinner.isEnabled = isAppBlocked
-                holder.timeSpinner.alpha = if (isAppBlocked) 1.0f else 0.4f
+                holder.itemBinding.appCheckBox.isChecked = wrapper.isBlocked
+                holder.itemBinding.timeSpinner.isEnabled = wrapper.isBlocked
+                holder.itemBinding.timeSpinner.alpha = if (wrapper.isBlocked) 1.0f else 0.4f
 
-                val savedTime = prefs.getInt("time_${app.packageName}", 5)
-                val spinnerIndex = timeValues.indexOf(savedTime).takeIf { it >= 0 } ?: 0
-                holder.timeSpinner.setSelection(spinnerIndex, false)
+                val spinnerIndex = timeValues.indexOf(wrapper.savedTime).takeIf { it >= 0 } ?: 0
+                holder.itemBinding.timeSpinner.setSelection(spinnerIndex, false)
 
-                holder.isBinding = false // Reset safe interactivity flag
+                holder.isBinding = false
             }
         }
     }

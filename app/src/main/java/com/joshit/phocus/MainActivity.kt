@@ -87,7 +87,11 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.appsToDisplay.collect { apps ->
-                    currentAppList = apps.filter { it.packageName != packageName }
+                    currentAppList = apps.filter {
+                        it.packageName != packageName &&
+                        it.packageName != "com.android.dialer" &&
+                        it.packageName != "com.google.android.dialer"
+                    }
                     processListAndRefreshUI()
                 }
             }

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_dialog_emergency"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="32dp">
+
+    <TextView
+        android:id="@+id/dialogTitleText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="3 Tokens Left"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Emergency Bypass for 1 Hr"
+        android:textColor="#E0E0E0"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/dialogCodeText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:layout_marginBottom="24dp"
+        android:text="123-456"
+        android:textColor="#FFFFFF"
+        android:textSize="36sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.05" />
+
+    <EditText
+        android:id="@+id/dialogInputBox"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@drawable/bg_input_pill"
+        android:gravity="center"
+        android:hint="XXX-XXX"
+        android:textColorHint="#A0A0A0"
+        android:inputType="number"
+        android:maxLength="6"
+        android:textColor="#000000"
+        android:textSize="20sp"
+        android:letterSpacing="0.2" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:orientation="horizontal"
+        android:weightSum="2">
+
+        <Button
+            android:id="@+id/dialogCancelBtn"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:backgroundTint="#20FFFFFF"
+            android:text="Cancel"
+            android:textColor="#FFFFFF"
+            style="?attr/materialButtonOutlinedStyle" />
+
+        <Button
+            android:id="@+id/dialogVerifyBtn"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:backgroundTint="#FFFFFF"
+            android:text="Unlock"
+            android:textColor="#3B09C0"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

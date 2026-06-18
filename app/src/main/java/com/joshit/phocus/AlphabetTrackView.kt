@@ -172,7 +172,7 @@ class AlphabetTrackView @JvmOverloads constructor(
                 }
 
                 invalidate()
-                lastDrawnY = -1f // Reset cache
+                lastDrawnY = -1f
                 lastAnnouncedIndex = -1
 
                 onLetterTouchListener?.invoke(alphabet[index], event.actionMasked, currentTouchY)

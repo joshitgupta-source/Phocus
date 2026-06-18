@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <corners android:radius="100dp" /> <!-- 100dp ensures perfect pill-shaped rounded ends -->
-    <solid android:color="#FFFFFF" /> <!-- This white color gets dynamically tinted by Kotlin -->
+    <corners android:radius="100dp" />
+    <solid android:color="#FFFFFF" />
 </shape>

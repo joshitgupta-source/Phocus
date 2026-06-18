@@ -41,32 +41,26 @@ import android.widget.Button
 @SuppressLint("SetTextI18n")
 class LockActivity : AppCompatActivity(), SensorEventListener {
 
-    // --- HARDWARE ---
     private lateinit var sensorManager: SensorManager
     private var linearAccel: Sensor? = null
     private var gravitySensor: Sensor? = null
     private var vibrator: Vibrator? = null
     private lateinit var prefs: SharedPreferences
 
-    // --- APP STATE ---
     private var targetApp: String = ""
     private var isPenalty = false
     private var isAppSetupBarrier = false
 
-    // 🥬 THE 60 CABBAGE FIX: The Absolute Freeze Flag
     private var isEmergencyDialogOpen = false
 
-    // --- UI ELEMENTS ---
     private lateinit var statusText: TextView
     private lateinit var timerText: TextView
     private lateinit var wobbleBubble: View
 
-    // --- OPTIMIZATION: CACHED COLORS ---
-    private val colorRed = "#CF6679".toColorInt()
+    private val colorRed = "#FF0000".toColorInt()
     private var colorDynamicText = 0
     private var colorThemeIndigo = 0
 
-    // --- TIMERS & LOGIC ---
     private var countDownTimer: CountDownTimer? = null
     private var isTimerRunning = false
     private var isPhoneFlat = false
@@ -82,7 +76,7 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
     companion object {
         private const val PENALTY_COOLDOWN_MS = 1000L
-        private const val STAND_GRACE_PERIOD_MS = 1500L // 1.5 seconds of safety after picking up
+        private const val STAND_GRACE_PERIOD_MS = 1000L
         private const val ACCEL_THRESHOLD_SQ = 0.5f
         private const val MIN_TREMOR_SQ = 0.005f
         private const val SMOOTHING_FACTOR = 0.2f
@@ -134,18 +128,14 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         setupHardware()
     }
 
-    // --- THE FIX: Emergency System Architecture ---
     private fun setupEmergencyButton() {
         val emergencyBtn = findViewById<TextView>(R.id.emergencyBtn) ?: return
 
         if (isAppSetupBarrier) {
-            // Hide emergency button if they are just unlocking Phocus itself
             emergencyBtn.visibility = View.GONE
         } else {
             emergencyBtn.visibility = View.VISIBLE
 
-            // Dynamic text color automatically shifts between Black/White based on theme
-            // 🥬 THE UI FIX: Use the pill shape, and tint it Indigo!
             emergencyBtn.setBackgroundResource(R.drawable.bg_pill_button)
             emergencyBtn.backgroundTintList = android.content.res.ColorStateList.valueOf(colorThemeIndigo)
 
@@ -155,13 +145,11 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // Handles the "3 Tokens Per Month" automated reset
     private fun getTokensLeft(): Int {
         val cal = Calendar.getInstance()
         val currentMonthKey = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}"
         val savedMonthKey = prefs.getString("token_reset_month", "")
 
-        // If it is a new month, reset tokens to 3
         if (savedMonthKey != currentMonthKey) {
             prefs.edit {
                 putInt("emergency_tokens", 3)
@@ -179,40 +167,30 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             return
         }
 
-        // 🥬 THE 60 CABBAGE FIX: Engage the absolute freeze
         isEmergencyDialogOpen = true
 
-        // --- THE FIX 1: Pause the background timer! ---
         countDownTimer?.cancel()
         isTimerRunning = false
         timerText.text = "Paused"
         statusText.text = "Emergency Mode"
         wobbleBubble.alpha = 0.2f
 
-        // 1. Generate the codes
         val part1 = (100..999).random()
         val part2 = (100..999).random()
 
-        // Because we are auto-adding the hyphen, the expected input IS the display code!
         val displayCode = "$part1-$part2"
 
-        // 2. Inflate your custom XML layout
         val dialogView = layoutInflater.inflate(R.layout.dialog_emergency, null)
 
-        // 3. Find the views inside your custom layout
         val titleText = dialogView.findViewById<TextView>(R.id.dialogTitleText)
         val codeText = dialogView.findViewById<TextView>(R.id.dialogCodeText)
         val inputBox = dialogView.findViewById<EditText>(R.id.dialogInputBox)
         val verifyBtn = dialogView.findViewById<Button>(R.id.dialogVerifyBtn)
         val cancelBtn = dialogView.findViewById<Button>(R.id.dialogCancelBtn)
 
-        // --- THE FIX 2: Smart Keyboard & Length Overrides ---
-        // Override XML to allow 7 characters (6 digits + 1 hyphen)
         inputBox.filters = arrayOf(android.text.InputFilter.LengthFilter(7))
-        // Use PHONE type to keep the number pad but allow the hyphen symbol
         inputBox.inputType = android.text.InputType.TYPE_CLASS_PHONE
 
-        // --- THE FIX 3: The Smart Auto-Hyphen Formatter ---
         var isDeleting = false
         var isFormatting = false
 
@@ -220,7 +198,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
 
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                // Detect if the user pressed the backspace key
                 isDeleting = before > count
             }
 
@@ -228,75 +205,64 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
                 if (isFormatting || s == null) return
                 isFormatting = true
 
-                // Strip existing hyphens so we are only calculating pure numbers
                 val cleanString = s.toString().replace("-", "")
                 val formatted = java.lang.StringBuilder()
 
                 for (i in cleanString.indices) {
                     formatted.append(cleanString[i])
-                    // Automatically add the hyphen after the 3rd digit
                     if (i == 2 && cleanString.length > 3) {
                         formatted.append("-")
                     }
                 }
 
-                // If they just typed the exact 3rd digit (and aren't deleting), append the hyphen
                 if (cleanString.length == 3 && s.length == 3 && !isDeleting) {
                     formatted.append("-")
                 }
 
                 inputBox.setText(formatted.toString())
-                inputBox.setSelection(formatted.length) // Keep cursor at the end
+                inputBox.setSelection(formatted.length)
 
                 isFormatting = false
             }
         })
 
-        // 4. Set the dynamic text
         titleText.text = "$tokensLeft Tokens Left \uD83E\uDE99"
         codeText.text = displayCode
 
-        // 5. Build and show the dialog
         val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setView(dialogView)
             .setBackground(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            .setCancelable(false) // Forces them to use the buttons
+            .setCancelable(true)
             .create()
 
-        // 6. Handle Button Clicks
         verifyBtn.setOnClickListener {
-            // Compare their formatted input directly to the display code
             if (inputBox.text.toString().trim() == displayCode) {
-                // 🥬 THE 60 CABBAGE FIX: Unfreeze before closing
                 isEmergencyDialogOpen = false
                 dialog.dismiss()
                 processEmergencyUnlock(tokensLeft)
             } else {
                 Toast.makeText(this, "Incorrect code. Try again.", Toast.LENGTH_SHORT).show()
-                inputBox.text.clear() // Clear it so they can try again fast
+                inputBox.text.clear()
             }
         }
 
         cancelBtn.setOnClickListener {
-            // 🥬 THE 60 CABBAGE FIX: Unfreeze so hardware can respond again
+            dialog.cancel()
+        }
+        dialog.setOnCancelListener {
             isEmergencyDialogOpen = false
-            dialog.dismiss()
 
-            // --- THE FIX: Ask the hardware sensors what state we are in before blindly resuming! ---
             if (isPhoneFlat) {
-                // Phone is still on the table, keep it paused and red!
                 statusText.text = "Pick it up!\nNo resting on tables."
                 statusText.setTextColor(colorRed)
                 timerText.text = "Paused"
                 wobbleBubble.alpha = 0.2f
             } else if (isOnStand) {
-                // Phone is still on a stand, keep it paused and red!
                 statusText.text = "Too perfect!\nAre you using a stand?"
                 statusText.setTextColor(colorRed)
                 timerText.text = "Paused"
                 wobbleBubble.alpha = 0.2f
             } else {
-                // Phone is actively in the user's hand, safely resume the timer!
                 restoreDefaultStatus()
                 startStillnessTimer(timeLeftMs)
             }
@@ -309,17 +275,13 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         val newTokens = currentTokens - 1
 
         prefs.edit {
-            // Write the current timestamp
             putLong("unlock_time_$targetApp", System.currentTimeMillis())
-            // Temporarily grant 60 minutes for this target app
             putInt("time_$targetApp", 60)
-            // Deduct the token pool
             putInt("emergency_tokens", newTokens)
         }
 
         Toast.makeText(this, "$newTokens tokens left. Unlocked for 1 hour.", Toast.LENGTH_LONG).show()
 
-        // Launch the app immediately
         val launchIntent = packageManager.getLaunchIntentForPackage(targetApp)
         if (launchIntent != null) {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -331,7 +293,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
         }
         finish()
     }
-    // --- END EMERGENCY ENGINE ---
 
     private fun updateWakeLock(keepOn: Boolean) {
         if (keepOn) {
@@ -373,7 +334,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
 
         Choreographer.getInstance().postFrameCallback(frameCallback)
 
-        // 🥬 THE 60 CABBAGE FIX: Protect against the user minimizing the app while dialog is open
         if (!isEmergencyDialogOpen) {
             startStillnessTimer(timeLeftMs)
         }
@@ -453,7 +413,6 @@ class LockActivity : AppCompatActivity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        // 🥬 THE 60 CABBAGE FIX: Completely deafen the hardware sensors if the dialog is open!
         if (event == null || isEmergencyDialogOpen) return
 
         when (event.sensor.type) {

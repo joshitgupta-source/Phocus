@@ -23,14 +23,12 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
     private lateinit var powerManager: PowerManager
     private lateinit var usageStatsManager: UsageStatsManager
 
-    // Settings Caches
     private val blockedAppsCache = mutableSetOf<String>()
     private val timeLimitCache = mutableMapOf<String, AppRule>()
 
-    // --- THE FIX: State-Driven Memory Engine ---
     private var currentForegroundApp: String? = null
     private var lastEventTime = 0L
-    private val lastBlockTimeMap = mutableMapOf<String, Long>() // Prevents spamming the lock screen
+    private val lastBlockTimeMap = mutableMapOf<String, Long>()
 
     private data class AppRule(val expirationTime: Long, val penaltyEndTime: Long)
 
@@ -87,7 +85,6 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
-    // THE FIX: Looks back 1 hour to find out what app is currently open before the engine starts
     private fun initializeForegroundState() {
         val endTime = System.currentTimeMillis()
         val startTime = endTime - (1000 * 60 * 60)
@@ -112,7 +109,7 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     private fun startTrackingLoop() {
-        initializeForegroundState() // Calibrate memory on boot
+        initializeForegroundState()
 
         scope.launch {
             while (isActive && isTracking) {
@@ -128,12 +125,11 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private fun checkUsageEvents() {
         val endTime = System.currentTimeMillis()
-        val startTime = endTime - 10000L // 10-second rolling sweep for safety
+        val startTime = endTime - 10000L
 
         val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
         val event = UsageEvents.Event()
 
-        // 1. UPDATE THE MEMORY STATE
         while (usageEvents.hasNextEvent()) {
             usageEvents.getNextEvent(event)
 
@@ -150,19 +146,15 @@ class PhocusTrackingService : Service(), SharedPreferences.OnSharedPreferenceCha
             }
         }
 
-        // 2. ENFORCE RULES BASED ON MEMORY (Not just events)
         val fgApp = currentForegroundApp
 
-        // If the app currently on screen is in our block list...
         if (fgApp != null && fgApp in blockedAppsCache && fgApp != packageName && fgApp != "com.android.systemui") {
             val rule = timeLimitCache[fgApp]
 
-            // Check the clock: Is the granted time expired?
             if (rule != null && endTime >= rule.expirationTime) {
 
                 val lastBlockTime = lastBlockTimeMap[fgApp] ?: 0L
 
-                // 4-second cooldown to prevent spamming the lock screen
                 if (endTime - lastBlockTime > 4000L) {
                     lastBlockTimeMap[fgApp] = endTime
 

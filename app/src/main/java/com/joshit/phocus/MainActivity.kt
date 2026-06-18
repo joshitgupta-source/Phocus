@@ -39,14 +39,11 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.*
-
-// IMPORTANT: Ensure ViewBinding is enabled in build.gradle
 import com.joshit.phocus.databinding.ActivityMainBinding
 import com.joshit.phocus.databinding.ItemAppBinding
 import com.joshit.phocus.databinding.ItemHeaderBinding
 import kotlin.time.Duration.Companion.milliseconds
 
-// OPTIMIZATION 1: The UI Wrapper prevents reading the database during rapid scrolling
 data class AppItemWrapper(
     val app: AppInfo,
     val isBlocked: Boolean,
@@ -57,7 +54,7 @@ data class AppItemWrapper(
 class MainActivity : AppCompatActivity() {
 
     private val viewModel: AppViewModel by viewModels()
-    private lateinit var binding: ActivityMainBinding // OPTIMIZATION 2: View Binding
+    private lateinit var binding: ActivityMainBinding
 
     private lateinit var prefs: SharedPreferences
     private val blockedApps = mutableSetOf<String>()
@@ -65,12 +62,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appAdapter: AppAdapter
 
     private var currentAppList = listOf<AppInfo>()
-    private var searchJob: Job? = null // For background search debouncing
+    private var searchJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize View Binding
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         supportActionBar?.hide()
@@ -120,7 +116,6 @@ class MainActivity : AppCompatActivity() {
                     hideScrollBar()
                 }
 
-                // OPTIMIZATION 3: Search Debouncing. Waits 150ms before searching to keep keyboard snappy!
                 searchJob?.cancel()
                 searchJob = lifecycleScope.launch {
                     delay(150.milliseconds)
@@ -176,7 +171,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- THE MEGA ENGINE: Offloads List Sorting & Database Lookups to a Background Thread ---
     private fun processListAndRefreshUI(query: String = binding.searchInput.text.toString().trim().lowercase()) {
         lifecycleScope.launch(Dispatchers.Default) {
 
@@ -185,7 +179,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 currentAppList.asSequence()
                     .filter { it.name.lowercase().contains(query) }
-                    // THE FIX 1: Use sortedWith so we can rank by match quality, AND THEN alphabetically
                     .sortedWith(
                         compareByDescending<AppInfo> { app ->
                             val appName = app.name.lowercase()
@@ -201,9 +194,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             val (blocked, unblocked) = listToProcess.partition { blockedApps.contains(it.packageName) }
-
-            // THE FIX 2: Only force a pure alphabetical sort if the user IS NOT searching!
-            // If they are searching, listToProcess is already in the perfect order.
             val sortedBlocked = if (query.isEmpty()) blocked.sortedBy { it.name.lowercase() } else blocked
             val sortedUnblocked = if (query.isEmpty()) unblocked.sortedBy { it.name.lowercase() } else unblocked
 
@@ -387,7 +377,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- MODERNIZED VIEW HOLDER ADAPTER ---
     inner class AppAdapter(private var items: List<Any>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         private val typeHeader = 0
@@ -404,27 +393,19 @@ class MainActivity : AppCompatActivity() {
 
         fun getPositionForLetter(letter: Char): Int {
             val upperLetter = letter.uppercaseChar()
-
-            // 1. Find exactly where the main dictionary begins (ignores the blocked apps)
             val startIndex = items.indexOf("All Apps").coerceAtLeast(0)
-
-            // 2. Ensure we actually have apps under the header to look at
             val firstAppIndex = if (startIndex + 1 < items.size) startIndex + 1 else startIndex
 
-            // 🥬 THE 12 CABBAGE FIX: If they touch the '#', jump straight to the very first app!
-            // Because your list is sorted alphabetically, numbers naturally sit at the very top.
             if (upperLetter == '#') {
                 return firstAppIndex
             }
 
-            // 3. Start searching ONLY from that safe index downward
             for (i in firstAppIndex until items.size) {
                 val item = items[i]
 
                 if (item is AppItemWrapper) {
                     val firstChar = item.app.name.firstOrNull()?.uppercaseChar() ?: 'A'
 
-                    // If the app starts with a number, this skips it while looking for A-Z
                     if (firstChar >= upperLetter) {
                         return i
                     }
@@ -442,7 +423,6 @@ class MainActivity : AppCompatActivity() {
                     val old = items[oldItemPosition]
                     val new = newItems[newItemPosition]
                     if (old is String && new is String) return old == new
-                    // AppItemWrapper makes DiffUtil logic perfectly safe and clean!
                     if (old is AppItemWrapper && new is AppItemWrapper) return old.app.packageName == new.app.packageName
                     return false
                 }
@@ -456,7 +436,6 @@ class MainActivity : AppCompatActivity() {
             diffResult.dispatchUpdatesTo(this)
         }
 
-        // Leveraging generated Binding classes directly
         inner class HeaderViewHolder(val itemBinding: ItemHeaderBinding) : RecyclerView.ViewHolder(itemBinding.root)
         inner class AppViewHolder(val itemBinding: ItemAppBinding) : RecyclerView.ViewHolder(itemBinding.root) {
 
@@ -532,7 +511,6 @@ class MainActivity : AppCompatActivity() {
                             putBoolean("isSetupComplete", blockedApps.isNotEmpty())
                         }
 
-                        // Seamlessly updates the lists without stutter
                         processListAndRefreshUI()
                     }
                 }
@@ -568,18 +546,14 @@ class MainActivity : AppCompatActivity() {
                 val wrapper = items[position] as AppItemWrapper
 
                 holder.isBinding = true
-
-                // Zero database lookups here! It's all loaded from the wrapper natively.
                 holder.itemBinding.appName.text = wrapper.app.name
                 holder.itemBinding.appIcon.setImageDrawable(wrapper.app.icon)
-
                 holder.itemBinding.appCheckBox.isChecked = wrapper.isBlocked
                 holder.itemBinding.timeSpinner.isEnabled = wrapper.isBlocked
                 holder.itemBinding.timeSpinner.alpha = if (wrapper.isBlocked) 1.0f else 0.4f
 
                 val spinnerIndex = timeValues.indexOf(wrapper.savedTime).takeIf { it >= 0 } ?: 0
                 holder.itemBinding.timeSpinner.setSelection(spinnerIndex, false)
-
                 holder.isBinding = false
             }
         }

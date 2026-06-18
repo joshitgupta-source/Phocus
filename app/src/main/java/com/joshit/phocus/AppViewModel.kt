@@ -14,7 +14,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _appsToDisplay = MutableStateFlow<List<AppInfo>>(emptyList())
 
-    // asStateFlow() protects the mutable flow from being accidentally modified by the UI
     val appsToDisplay: StateFlow<List<AppInfo>> = _appsToDisplay.asStateFlow()
 
     init {
@@ -32,7 +31,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             @Suppress("DEPRECATION")
             val launchableApps = pm.queryIntentActivities(mainIntent, 0)
-                .asSequence() // --- OPTIMIZATION: Prevents RAM bloat by eliminating intermediate list allocations ---
+                .asSequence()
                 .filter { it.activityInfo.packageName != myPackageName }
                 .distinctBy { it.activityInfo.packageName }
                 .map { resolveInfo ->
@@ -43,7 +42,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 .sortedBy { it.name.lowercase() }
-                .toList() // Terminal operation, builds exactly one clean list at the very end
+                .toList()
 
             _appsToDisplay.value = launchableApps
         }
